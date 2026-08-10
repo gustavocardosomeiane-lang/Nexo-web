@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+
+# Arquivos de trabalho: não fazem parte do site publicado.
+Disallow: /portfolio/
+Disallow: /specs/
+
+Sitemap: https://nexoweb.com.br/sitemap.xml

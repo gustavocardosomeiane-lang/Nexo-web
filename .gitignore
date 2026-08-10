@@ -1,0 +1,38 @@
+# Dependências (o site não usa nenhuma em runtime)
+node_modules/
+
+# Segredos — nunca versionar
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+secrets.json
+
+# Build e cache de hospedagem
+.vercel/
+.netlify/
+dist/
+build/
+.cache/
+
+# Sistema operacional
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+._*
+
+# Editores
+.vscode/
+.idea/
+*.swp
+*~
+
+# Logs
+*.log
+npm-debug.log*
