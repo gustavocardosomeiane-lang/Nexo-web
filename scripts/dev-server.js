@@ -36,7 +36,8 @@ const TIPOS = {
 // Espelho do vercel.json / _headers. Mudou lá, mude aqui também.
 const SEGURANCA = {
   'Content-Security-Policy':
-    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; " +
+    "default-src 'self'; script-src 'self' 'sha256-OuZY6WzJOIh2C89ThsUSxQtxIJomDP4jHuL8NXL3o5c='; " +
+    "style-src 'self'; img-src 'self' data:; font-src 'self'; " +
     "connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'; " +
     "frame-ancestors 'none'",
   'X-Content-Type-Options': 'nosniff',

@@ -153,6 +153,55 @@ Correção: altura explícita (`height: 100dvh`) em vez de depender de `bottom: 
 casos, porque o header começa no topo da tela. Registrado aqui porque é uma armadilha fácil de
 reintroduzir ao mexer no header.
 
+### D-17 · Otimização de performance (a partir do PageSpeed Insights)
+
+**Imagens responsivas.** Foram geradas variantes menores a partir dos PNGs originais e ligadas por
+`srcset`/`sizes`. Os arquivos antigos continuam existindo, com o mesmo nome, como `src` de
+fallback e maior degrau do srcset — nenhum caminho foi quebrado:
+
+| Novo arquivo | Substitui em telas 1x | Economia |
+|---|---|---|
+| `centerseg-hero-560.webp` · `-760.webp` | `centerseg-hero.webp` (960w) | 14 KB no LCP |
+| `traco-hero-280.webp` | `traco-hero.webp` (640w) | 12 KB |
+| `centerseg-card-400.webp` | `centerseg-card.webp` (760w) | 70 KB |
+| `traco-card-400.webp` | `traco-card.webp` (760w) | 80 KB |
+| `c2minds-card-400.webp` | `c2minds-card.webp` (760w) | 53 KB |
+
+Em telas retina o navegador continua escolhendo o arquivo grande — isso é proposital, é o que
+mantém a nitidez. A economia se realiza em densidade 1x, que é onde o relatório mediu.
+
+O `<link rel="preload">` do hero repete `imagesrcset`/`imagesizes`. **Sem isso o navegador baixa
+dois arquivos** e o LCP piora em vez de melhorar.
+
+**`boot.js` deixou de existir.** Aquele script de uma linha custava uma ida e volta à rede
+bloqueando a renderização. Agora é inline no `<head>`, liberado por hash SHA-256 na CSP —
+a política continua sem `unsafe-inline`. O hash vive em três lugares: `<meta>` das duas páginas,
+`vercel.json` e `_headers`.
+
+**Animações não compostas.** A barra do loader animava `width` (força layout a cada quadro) e
+passou a animar `transform: scaleX()`. O hover dos links do menu animava `padding-left` e passou
+a `translateX`. O `backdrop-filter` do header saiu da lista de transições — animá-lo custava um
+blur por quadro; o fade continua pela cor de fundo.
+
+**Cache.** O `Cache-Control` de imagem caiu de 7 dias para 1 hora, com
+`stale-while-revalidate=604800`. Motivo: a Vercel aplica os headers pelo caminho, **inclusive em
+respostas 404** — foi assim que um 404 antigo das imagens ficou preso no navegador por dias
+(ver D-18). Fontes foram de `immutable`/1 ano para 7 dias + SWR de 30 dias, pelo mesmo motivo.
+CSS e JS seguem em `max-age=0, must-revalidate`: sem hash no nome, é o que garante atualização
+imediata ao publicar.
+
+**Contraste.** `--fg-dim` clareado — ver @specs/design.md § 9.
+
+### D-18 · Headers de cache também se aplicam a 404
+Registrado porque custou caro e não é óbvio: na Vercel, uma regra de `headers` casa pelo
+**caminho da requisição**, sem verificar se o arquivo existe. Um `Cache-Control` longo em
+`/assets/img/(.*)` gruda no 404 e o navegador para de perguntar ao servidor pelo tempo do
+`max-age` — mesmo depois de o arquivo voltar a existir.
+
+Sintoma: o arquivo está no Git, está no deploy, responde 200 no `curl`, e mesmo assim o navegador
+insiste em 404. A saída é `Ctrl+Shift+R` ou aba anônima; a prevenção é `max-age` curto com
+`stale-while-revalidate`.
+
 ---
 
 ## Pendências abertas

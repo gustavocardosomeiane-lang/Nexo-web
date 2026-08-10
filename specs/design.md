@@ -64,7 +64,7 @@ protagonista.
 | `--line-soft` | `rgba(255,255,255,.07)` | Divisores sutis |
 | `--fg` | `#FFFFFF` | Títulos |
 | `--fg-muted` | `#A8ABB4` | Texto corrido |
-| `--fg-dim` | `#767A85` | Legendas, apoio |
+| `--fg-dim` | `#8A8E99` | Legendas, apoio |
 
 ### Vermelho (o acento)
 
@@ -236,6 +236,9 @@ final. Não é opcional.
 - Contraste mínimo AA. `--fg-muted` sobre `--bg` = 9.4:1. `--red` sobre branco em texto pequeno
   **não passa** — por isso vermelho nunca é usado em texto corrido, só em botão (branco sobre
   vermelho = 4.9:1) e em elementos grandes.
+- `--fg-dim` foi de `#767A85` para `#8A8E99` porque o valor antigo dava **4.09:1** sobre o card
+  verde do WhatsApp no rodapé — reprovado. Agora dá 5.37:1 ali, 5.97:1 no rodapé inferior e
+  passa também sobre `--surface`. Ao escurecer esse token de novo, refaça a conta.
 - Foco: anel de 2px em `--red` com 2px de deslocamento. Sempre visível, nunca removido.
 - Estado nunca comunicado só por cor — sempre acompanha ícone, texto ou peso.
 

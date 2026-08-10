@@ -568,7 +568,8 @@
     var relogio = window.setInterval(function () {
       var teto = carregou ? 100 : 88;
       progresso = Math.min(teto, progresso + (carregou ? 16 : Math.random() * 7 + 3));
-      barra.style.setProperty('width', progresso + '%');
+      // scaleX em vez de width: a barra anima na GPU, sem forçar layout.
+      barra.style.setProperty('transform', 'scaleX(' + (progresso / 100) + ')');
 
       if (progresso >= 100 && Date.now() - inicio >= 650) {
         window.clearInterval(relogio);

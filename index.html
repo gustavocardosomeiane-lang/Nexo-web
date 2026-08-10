@@ -11,7 +11,7 @@
 <link rel="canonical" href="https://nexoweb.com.br/">
 
 <!-- Sem chamadas externas: fontes, imagens, CSS e JS saem todos do próprio domínio. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-OuZY6WzJOIh2C89ThsUSxQtxIJomDP4jHuL8NXL3o5c='; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-src 'none'">
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#08080A">
@@ -38,10 +38,22 @@
 <link rel="manifest" href="site.webmanifest">
 
 <link rel="preload" href="assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="assets/img/portfolio/centerseg-hero.webp" as="image" type="image/webp" fetchpriority="high">
+<!-- O preload precisa repetir srcset/sizes do <img>. Sem isso o navegador baixa
+     um arquivo aqui e outro diferente lá, e o LCP paga duas vezes. -->
+<link rel="preload" as="image" type="image/webp" fetchpriority="high"
+      href="assets/img/portfolio/centerseg-hero-560.webp"
+      imagesrcset="assets/img/portfolio/centerseg-hero-560.webp 560w,
+                   assets/img/portfolio/centerseg-hero-760.webp 760w,
+                   assets/img/portfolio/centerseg-hero.webp 960w"
+      imagesizes="(min-width: 1024px) 505px, 92vw">
 <link rel="stylesheet" href="assets/css/styles.css">
 
-<script src="assets/js/boot.js"></script>
+<!-- Inline de propósito: era um arquivo separado e bloqueava a renderização por
+     uma ida e volta inteira à rede, só para trocar uma classe. O hash SHA-256
+     está liberado na CSP (meta acima, vercel.json e _headers). Ao editar esta
+     linha, o hash precisa ser recalculado nos três lugares. Se ela falhar, a
+     classe .no-js permanece e o site aparece inteiro, sem loader. -->
+<script>document.documentElement.classList.replace('no-js','js')</script>
 
 <!--
   Dados estruturados. O telefone precisa ficar estático aqui para os buscadores;
@@ -243,7 +255,14 @@
             <span class="browser-dots"><i></i><i></i><i></i></span>
             <span class="browser-url">Center Seg</span>
           </div>
-          <img src="assets/img/portfolio/centerseg-hero.webp" width="960" height="600"
+          <!-- Imagem do LCP: prioridade alta, sem lazy, e o navegador escolhe o
+               menor arquivo que serve para o tamanho real de exibição. -->
+          <img src="assets/img/portfolio/centerseg-hero.webp"
+               srcset="assets/img/portfolio/centerseg-hero-560.webp 560w,
+                       assets/img/portfolio/centerseg-hero-760.webp 760w,
+                       assets/img/portfolio/centerseg-hero.webp 960w"
+               sizes="(min-width: 1024px) 505px, 92vw"
+               width="960" height="600"
                alt="Site institucional criado pela NEXO WEB para a Center Seg, empresa de segurança eletrônica."
                fetchpriority="high" decoding="async">
         </figure>
@@ -253,7 +272,12 @@
             <span class="browser-dots"><i></i><i></i><i></i></span>
             <span class="browser-url">TRAÇO Arquitetura</span>
           </div>
-          <img src="assets/img/portfolio/traco-hero.webp" width="640" height="400" alt="" loading="lazy" decoding="async">
+          <!-- Moldura secundária: só aparece a partir de 1024px, a ~278px de largura. -->
+          <img src="assets/img/portfolio/traco-hero.webp"
+               srcset="assets/img/portfolio/traco-hero-280.webp 280w,
+                       assets/img/portfolio/traco-hero.webp 640w"
+               sizes="278px"
+               width="640" height="400" alt="" loading="lazy" decoding="async">
         </figure>
 
         <p class="hero-badge">
@@ -394,7 +418,11 @@
               <span class="browser-url">Center Seg</span>
             </div>
             <div class="pf-shot-wrap">
-              <img class="pf-shot" src="assets/img/portfolio/centerseg-card.webp" width="760" height="3863"
+              <img class="pf-shot" src="assets/img/portfolio/centerseg-card.webp"
+                   srcset="assets/img/portfolio/centerseg-card-400.webp 400w,
+                           assets/img/portfolio/centerseg-card.webp 760w"
+                   sizes="(min-width: 1024px) 357px, (min-width: 560px) 44vw, 92vw"
+                   width="760" height="3863"
                    alt="Página inteira do site da Center Seg, com seções de soluções em segurança eletrônica, projetos executados e contato."
                    loading="lazy" decoding="async">
             </div>
@@ -423,7 +451,11 @@
               <span class="browser-url">TRAÇO Arquitetura</span>
             </div>
             <div class="pf-shot-wrap">
-              <img class="pf-shot" src="assets/img/portfolio/traco-card.webp" width="760" height="3592"
+              <img class="pf-shot" src="assets/img/portfolio/traco-card.webp"
+                   srcset="assets/img/portfolio/traco-card-400.webp 400w,
+                           assets/img/portfolio/traco-card.webp 760w"
+                   sizes="(min-width: 1024px) 357px, (min-width: 560px) 44vw, 92vw"
+                   width="760" height="3592"
                    alt="Página inteira do site do escritório TRAÇO Arquitetura, com portfólio de projetos residenciais e comerciais."
                    loading="lazy" decoding="async">
             </div>
@@ -452,7 +484,11 @@
               <span class="browser-url">C2 Minds</span>
             </div>
             <div class="pf-shot-wrap">
-              <img class="pf-shot" src="assets/img/portfolio/c2minds-card.webp" width="760" height="3569"
+              <img class="pf-shot" src="assets/img/portfolio/c2minds-card.webp"
+                   srcset="assets/img/portfolio/c2minds-card-400.webp 400w,
+                           assets/img/portfolio/c2minds-card.webp 760w"
+                   sizes="(min-width: 1024px) 357px, (min-width: 560px) 44vw, 92vw"
+                   width="760" height="3569"
                    alt="Página inteira do site da C2 Minds, agência de estratégia de conteúdo, com estudos de caso e processo de trabalho."
                    loading="lazy" decoding="async">
             </div>
