@@ -1,0 +1,4 @@
+# Painel administrativo da NEXO WEB. Sistema interno.
+# Nada aqui deve ser indexado por buscador algum.
+User-agent: *
+Disallow: /
