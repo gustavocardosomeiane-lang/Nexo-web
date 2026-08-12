@@ -72,8 +72,9 @@ tenta construir.
 A prova social vem do **portfólio real**, dos preços abertos e do processo transparente.
 
 ### D-08 · Planos — valores imutáveis
-R$ 1.500 (Básico) · R$ 3.500 (Profissional, "MAIS POPULAR") · R$ 6.000 (Premium).
-Valores, descrições e itens inclusos **não mudam**.
+~~R$ 1.500 (Básico) · R$ 3.500 (Profissional) · R$ 6.000 (Premium).~~
+**Substituído por D-19 em 2026-08-11.** Os valores continuam sendo dado travado: não mudam por
+iniciativa minha, só por decisão sua registrada aqui.
 
 ### D-09 · Sem analytics e sem cookies
 Nenhum Google Analytics, Meta Pixel ou rastreador. Motivo: exigiria banner de consentimento e
@@ -152,6 +153,122 @@ contenção* para descendentes `position: fixed`. Como o `<nav>` mora dentro do 
 Correção: altura explícita (`height: 100dvh`) em vez de depender de `bottom: 0`. Funciona nos dois
 casos, porque o header começa no topo da tela. Registrado aqui porque é uma armadilha fácil de
 reintroduzir ao mexer no header.
+
+### D-17 · Otimização de performance (a partir do PageSpeed Insights)
+
+**Imagens responsivas.** Foram geradas variantes menores a partir dos PNGs originais e ligadas por
+`srcset`/`sizes`. Os arquivos antigos continuam existindo, com o mesmo nome, como `src` de
+fallback e maior degrau do srcset — nenhum caminho foi quebrado:
+
+| Novo arquivo | Substitui em telas 1x | Economia |
+|---|---|---|
+| `centerseg-hero-560.webp` · `-760.webp` | `centerseg-hero.webp` (960w) | 14 KB no LCP |
+| `traco-hero-280.webp` | `traco-hero.webp` (640w) | 12 KB |
+| `centerseg-card-400.webp` | `centerseg-card.webp` (760w) | 70 KB |
+| `traco-card-400.webp` | `traco-card.webp` (760w) | 80 KB |
+| `c2minds-card-400.webp` | `c2minds-card.webp` (760w) | 53 KB |
+
+Em telas retina o navegador continua escolhendo o arquivo grande — isso é proposital, é o que
+mantém a nitidez. A economia se realiza em densidade 1x, que é onde o relatório mediu.
+
+O `<link rel="preload">` do hero repete `imagesrcset`/`imagesizes`. **Sem isso o navegador baixa
+dois arquivos** e o LCP piora em vez de melhorar.
+
+**`boot.js` deixou de existir.** Aquele script de uma linha custava uma ida e volta à rede
+bloqueando a renderização. Agora é inline no `<head>`, liberado por hash SHA-256 na CSP —
+a política continua sem `unsafe-inline`. O hash vive em três lugares: `<meta>` das duas páginas,
+`vercel.json` e `_headers`.
+
+**Animações não compostas.** A barra do loader animava `width` (força layout a cada quadro) e
+passou a animar `transform: scaleX()`. O hover dos links do menu animava `padding-left` e passou
+a `translateX`. O `backdrop-filter` do header saiu da lista de transições — animá-lo custava um
+blur por quadro; o fade continua pela cor de fundo.
+
+**Cache.** O `Cache-Control` de imagem caiu de 7 dias para 1 hora, com
+`stale-while-revalidate=604800`. Motivo: a Vercel aplica os headers pelo caminho, **inclusive em
+respostas 404** — foi assim que um 404 antigo das imagens ficou preso no navegador por dias
+(ver D-18). Fontes foram de `immutable`/1 ano para 7 dias + SWR de 30 dias, pelo mesmo motivo.
+CSS e JS seguem em `max-age=0, must-revalidate`: sem hash no nome, é o que garante atualização
+imediata ao publicar.
+
+**Contraste.** `--fg-dim` clareado — ver @specs/design.md § 9.
+
+### D-18 · Headers de cache também se aplicam a 404
+Registrado porque custou caro e não é óbvio: na Vercel, uma regra de `headers` casa pelo
+**caminho da requisição**, sem verificar se o arquivo existe. Um `Cache-Control` longo em
+`/assets/img/(.*)` gruda no 404 e o navegador para de perguntar ao servidor pelo tempo do
+`max-age` — mesmo depois de o arquivo voltar a existir.
+
+Sintoma: o arquivo está no Git, está no deploy, responde 200 no `curl`, e mesmo assim o navegador
+insiste em 404. A saída é `Ctrl+Shift+R` ou aba anônima; a prevenção é `max-age` curto com
+`stale-while-revalidate`.
+
+---
+
+## 2026-08-11
+
+### D-19 · Nova tabela de preços — **substitui D-08**
+Decisão sua, informada com valores e itens completos. O conflito com D-08 foi apresentado antes
+de aplicar.
+
+| Plano | Valor | Itens |
+|---|---|---|
+| Básico | **R$ 1.400** | Site de até 5 páginas · Design responsivo · Botão WhatsApp · Formulário de contato · SEO básico · Google Maps · Integração com redes sociais |
+| **Profissional** (MAIS POPULAR) | **R$ 2.500** | Site de até 10 páginas · Design personalizado · SEO avançado · Google Analytics · Integração com CMS · Integrações personalizadas · Otimização para conversão · 30 dias de suporte pós-entrega |
+| Premium | **R$ 4.000** | Site completo · Design exclusivo · E-commerce ou funcionalidades avançadas · SEO avançado · Google Analytics e relatórios · Automações · Integração com IA/WhatsApp · 60 dias de suporte pós-entrega |
+
+**"Suporte vitalício" saiu dos planos** e virou período determinado (30 e 60 dias). O plano Básico
+não tem período de suporte declarado.
+
+Como os planos alimentam mais de um lugar, foram atualizados junto: o `hasOfferCatalog` do JSON-LD
+(preço e descrição dos três), o `priceRange`, a `meta description` ("a partir de R$ 1.400"), o
+seletor "Plano de interesse" do formulário e as mensagens `plano-*` do `config.js` — sem isso o
+botão "Escolher Plano" enviaria o preço antigo no WhatsApp.
+
+### D-20 · "Suporte vitalício" eliminado do resto do site
+Consequência direta de D-19, aprovada por você. O termo sobrevivia em dois pontos fora dos planos
+e virou promessa falsa assim que o suporte passou a ter prazo. Corrigido:
+
+| Onde | Antes | Agora |
+|---|---|---|
+| Hero, 3º item da lista | Suporte vitalício | **Suporte pós-entrega** |
+| Dúvidas Frequentes | "O suporte é cobrado à parte?" → "Não. Os três planos… incluem suporte vitalício." | "Como funciona o suporte depois da entrega?" → "Os planos Profissional e Premium já incluem suporte pós-entrega no valor do projeto: 30 dias no Profissional e 60 dias no Premium." |
+
+O `FAQPage` do JSON-LD foi atualizado com o mesmo texto — senão o Google continuaria exibindo a
+resposta antiga no resultado ampliado.
+
+**A pergunta mudou de propósito.** "É cobrado à parte?" não tem resposta honesta hoje: exigiria
+inventar política comercial para o plano Básico (que não declara período de suporte) e para o que
+acontece depois dos 30/60 dias. A nova pergunta responde só com o que os planos declaram.
+
+**Terceira ocorrência encontrada na varredura.** A resposta "Vocês criam loja virtual?" prometia
+*"sistema de gestão e relatórios avançados"* — dois itens que a nova tabela do Premium não tem
+mais. Reescrita com a redação exata do plano: "O plano Premium contempla **e-commerce ou
+funcionalidades avançadas**, com Google Analytics e relatórios." O "ou" importa: o Premium não
+garante e-commerce, ele oferece e-commerce **ou** funcionalidades avançadas.
+
+### D-21 · Política de suporte pós-entrega — **fecha as pendências de D-20**
+Regra informada por você e agora travada. Ver a tabela em @specs/site.md § 6.
+
+| Plano | Suporte incluído |
+|---|---|
+| Básico | **Nenhum.** Suporte ou manutenção adicional contratado à parte, mediante avaliação. |
+| Profissional | **30 dias** |
+| Premium | **60 dias** |
+
+Encerrado o prazo, o suporte incluído acaba; qualquer suporte ou manutenção adicional é tratado
+separadamente, mediante avaliação/orçamento.
+
+**Onde isso aparece no site:** a resposta "Como funciona o suporte depois da entrega?" nas Dúvidas
+Frequentes, replicada no `FAQPage` do JSON-LD. Os cards dos planos **não mudaram** — continuam
+exatamente com os itens de D-19; a política de "contratar à parte" é condição comercial, não item
+de plano, e por isso vive só na FAQ.
+
+**Decisão consciente sobre o Hero:** o terceiro item da lista continua "Suporte pós-entrega". É
+promessa geral da empresa, no mesmo nível de "Design personalizado" (que literalmente só o
+Profissional tem) — os três itens espelham a seção Diferenciais, não a tabela de planos. Os prazos
+exatos e a exclusão do Básico ficam na FAQ. Se você preferir tirar a ambiguidade, o substituto
+natural é "SEO incluído", que é verdade nos três planos.
 
 ---
 

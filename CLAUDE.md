@@ -31,10 +31,13 @@ Antes de qualquer alteração, leia:
 - **Nunca invente** clientes, projetos, números, prêmios, depoimentos ou métricas.
   O portfólio usa **somente** os trabalhos reais da pasta `/portfolio`.
 - **Nunca** coloque chaves, tokens, senhas ou credenciais no código do frontend.
-- Os **valores dos planos** (R$ 1.500 / R$ 3.500 / R$ 6.000) são fixos. Não altere.
+- Os **valores dos planos** (R$ 1.400 / R$ 2.500 / R$ 4.000) são fixos. Não altere.
 - O nome da marca é **NEXO WEB** e não muda.
 - Dado de contato único e centralizado: constante `WHATSAPP` em `assets/js/config.js`.
   Alterou lá, alterou no site inteiro. Não espalhe o número pelo HTML.
+- O `<script>` inline do `<head>` é liberado por **hash SHA-256** na CSP. Se mudar aquela
+  linha, recalcule o hash e atualize nos **três** lugares: `<meta>` do `index.html` e do
+  `404.html`, `vercel.json` e `_headers`.
 
 ## Stack (travada)
 
@@ -48,7 +51,7 @@ index.html            Página única com todas as seções
 404.html              Página de erro
 assets/css/styles.css Design system + todas as seções
 assets/js/config.js   WhatsApp e mensagens por contexto (ponto único de edição)
-assets/js/boot.js     Script mínimo no <head> (marca .js para as animações)
+                      (o script que marca .js é inline no <head>, liberado por hash na CSP)
 assets/js/main.js     Menu, scroll spy, reveal, lightbox, formulário
 assets/img/           Ícones, OG e portfólio otimizado (WebP)
 assets/fonts/         Inter variável, auto-hospedada (OFL)

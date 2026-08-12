@@ -37,8 +37,8 @@ window.NEXO = {
     'prazo-padrao': 'Olá! Vim pelo site da NEXO WEB e quero saber mais sobre a entrega Padrão (até 7 dias).',
     'prazo-premium': 'Olá! Vim pelo site da NEXO WEB e quero saber mais sobre a entrega Premium (até 1 mês).',
 
-    'plano-basico': 'Olá! Vim pelo site da NEXO WEB e quero contratar o Plano Básico (R$ 1.500).',
-    'plano-profissional': 'Olá! Vim pelo site da NEXO WEB e quero contratar o Plano Profissional (R$ 3.500).',
-    'plano-premium': 'Olá! Vim pelo site da NEXO WEB e quero contratar o Plano Premium (R$ 6.000).'
+    'plano-basico': 'Olá! Vim pelo site da NEXO WEB e quero contratar o Plano Básico (R$ 1.400).',
+    'plano-profissional': 'Olá! Vim pelo site da NEXO WEB e quero contratar o Plano Profissional (R$ 2.500).',
+    'plano-premium': 'Olá! Vim pelo site da NEXO WEB e quero contratar o Plano Premium (R$ 4.000).'
   }
 };

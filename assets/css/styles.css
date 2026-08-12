@@ -40,7 +40,7 @@
   --line-soft: rgba(255, 255, 255, .07);
   --fg: #FFFFFF;
   --fg-muted: #A8ABB4;
-  --fg-dim: #767A85;
+  --fg-dim: #8A8E99;   /* clareado p/ passar 4.5:1 tambem sobre o card verde do rodape */
 
   /* Acento */
   --red: #E10E21;
@@ -140,11 +140,6 @@ h1, h2, h3, h4 { color: var(--fg); font-weight: 800; line-height: 1.1; letter-sp
 .section { padding-block: var(--section-y); position: relative; }
 .section-alt { background: var(--bg-alt); }
 
-.sr-only {
-  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
-}
-
 .skip-link {
   position: absolute; top: 8px; left: 8px; z-index: 200;
   transform: translateY(-200%);
@@ -227,10 +222,14 @@ h1, h2, h3, h4 { color: var(--fg); font-weight: 800; line-height: 1.1; letter-sp
   opacity: 0;
   animation: loader-entrada .6s var(--ease-expo) .34s forwards;
 }
+/* scaleX em vez de width: animar largura força layout a cada quadro; transform
+   é composto na GPU. O JS escreve o progresso como escala de 0 a 1. */
 .loader-fill {
-  display: block; height: 100%; width: 0;
+  display: block; height: 100%; width: 100%;
   background: var(--red);
-  transition: width .35s var(--ease);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform .35s var(--ease);
 }
 
 @keyframes loader-entrada {
@@ -356,7 +355,9 @@ body.is-carregando { overflow: hidden; }
   height: var(--header-h);
   display: flex; align-items: center;
   border-bottom: 1px solid transparent;
-  transition: background-color var(--t-mid), border-color var(--t-mid), backdrop-filter var(--t-mid);
+  /* backdrop-filter fora da transição: animá-lo custa um blur por quadro. A cor
+     de fundo ainda faz o fade, então o efeito de vidro continua igual. */
+  transition: background-color var(--t-mid), border-color var(--t-mid);
 }
 .site-header.is-scrolled {
   background: rgba(8, 8, 10, .82);
@@ -435,9 +436,10 @@ body.is-carregando { overflow: hidden; }
   display: block; padding: 14px 0;
   font-size: 1.05rem; font-weight: 500; color: var(--fg-muted);
   border-bottom: 1px solid var(--line-soft);
-  transition: color var(--t-fast), padding-left var(--t-fast);
+  /* translateX em vez de padding-left: mesmo deslocamento, sem recalcular layout. */
+  transition: color var(--t-fast), transform var(--t-fast);
 }
-.nav-link:hover { color: var(--fg); padding-left: 6px; }
+.nav-link:hover { color: var(--fg); transform: translateX(6px); }
 .nav-link[aria-current="true"] { color: var(--fg); font-weight: 600; }
 
 .nav-cta { margin-top: 24px; }
@@ -1084,7 +1086,7 @@ body.is-locked .wa-float { opacity: 0; transform: scale(.8); pointer-events: non
     padding: 8px 14px;
     font-size: .92rem; border: 0;
   }
-  .nav-link:hover { padding-left: 14px; }
+  .nav-link:hover { transform: none; }   /* o deslize é só do painel mobile */
   .nav-link::after {
     content: ''; position: absolute; left: 14px; right: 14px; bottom: 2px;
     height: 2px; background: var(--red); border-radius: 2px;

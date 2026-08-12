@@ -36,7 +36,7 @@ Objeções que o site precisa derrubar:
 1. "Será que fica bonito mesmo?" → Portfólio com trabalhos reais.
 2. "Quanto vai custar?" → Preços abertos, sem 'consulte-nos'.
 3. "Quanto tempo demora?" → Seção de prazos por tipo de projeto.
-4. "E depois que entregar, fico sozinho?" → Suporte vitalício nos planos.
+4. "E depois que entregar, fico sozinho?" → Suporte pós-entrega nos planos Profissional e Premium.
 5. "Como funciona?" → Processo em 4 etapas.
 
 ## 3. Produto e proposta de valor
@@ -115,11 +115,26 @@ Ordem definitiva (topo → base):
 
 | Plano | Valor | Descrição | Inclui |
 |---|---|---|---|
-| Básico | R$ 1.500 | Ideal para pequenas empresas | Site de até 5 páginas · Design responsivo · Otimização SEO básica · Pixels Meta e Google Ads integrados · Formulário de contato · Suporte vitalício |
-| **Profissional** (MAIS POPULAR) | R$ 3.500 | Para empresas em crescimento | Site de até 10 páginas · Design personalizado · SEO avançado · Integração com CMS · Analytics integrado · Suporte vitalício |
-| Premium | R$ 6.000 | Solução completa | Site ilimitado · Design exclusivo · E-commerce integrado · Sistema de gestão · Relatórios avançados · Suporte vitalício |
+| Básico | R$ 1.400 | Ideal para pequenas empresas | Site de até 5 páginas · Design responsivo · Botão WhatsApp · Formulário de contato · SEO básico · Google Maps · Integração com redes sociais |
+| **Profissional** (MAIS POPULAR) | R$ 2.500 | Para empresas em crescimento | Site de até 10 páginas · Design personalizado · SEO avançado · Google Analytics · Integração com CMS · Integrações personalizadas · Otimização para conversão · 30 dias de suporte pós-entrega |
+| Premium | R$ 4.000 | Solução completa | Site completo · Design exclusivo · E-commerce ou funcionalidades avançadas · SEO avançado · Google Analytics e relatórios · Automações · Integração com IA/WhatsApp · 60 dias de suporte pós-entrega |
 
 CTA de todos os planos: **"Escolher Plano"**. O Profissional é o de maior destaque visual.
+
+### Política de suporte pós-entrega (travada)
+
+| Plano | Suporte incluído |
+|---|---|
+| Básico | **Nenhum.** Suporte ou manutenção adicional é contratado à parte, mediante avaliação. |
+| Profissional | **30 dias** |
+| Premium | **60 dias** |
+
+Encerrados os 30 ou 60 dias, o suporte incluído no plano se encerra. Qualquer suporte ou
+manutenção adicional é tratado separadamente, mediante avaliação/orçamento.
+
+Esta é a **única** fonte da regra de suporte no site. Proibido afirmar suporte vitalício,
+ilimitado ou prazo diferente destes. A resposta das Dúvidas Frequentes reproduz esta tabela — se
+a política mudar, os dois lugares mudam juntos (mais o `FAQPage` do JSON-LD).
 
 **Diferenciais** — 6 itens: Design personalizado · Performance · Responsividade · Estratégia ·
 Segurança · Suporte.
@@ -132,7 +147,7 @@ Segurança · Suporte.
 Proibido transformar isso em garantia jurídica, promessa de reembolso ou prazo contratual.
 
 **Dúvidas frequentes** — 5 perguntas, em `<details>`/`<summary>` nativo (acessível, sem JS):
-prazo de entrega · suporte vitalício · funcionamento no celular · loja virtual · como começar.
+prazo de entrega · suporte pós-entrega · funcionamento no celular · loja virtual · como começar.
 
 Toda resposta é derivada de fato já aprovado (prazos, planos, serviços, processo). **Nenhuma
 resposta pode introduzir informação comercial nova** — política de reembolso, prazo de resposta,
