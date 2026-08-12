@@ -1,0 +1,129 @@
+/* ==========================================================================
+   Responsividade
+   Mobile-first no espírito: o celular não é o desktop encolhido. A tabela vira
+   lista de cartões, o Kanban vira coluna única com abas de etapa e a sidebar
+   vira painel deslizante.
+   ========================================================================== */
+
+.mostrar-mobile { display: none; }
+
+@media (max-width: 767px) {
+  .esconder-mobile { display: none !important; }
+  .mostrar-mobile { display: block; }
+
+  .pagina { padding-bottom: 40px; }
+  .pagina-cabeca { margin-bottom: 18px; }
+  .pagina-acoes { width: 100%; }
+  .pagina-acoes .btn { flex: 1 1 auto; }
+
+  .filtros .busca { flex: 1 1 100%; max-width: none; }
+  .filtros .select { flex: 1 1 45%; min-width: 0; }
+
+  .grade-kpi { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .stat { padding: 14px; }
+  .stat-valor { font-size: 1.25rem; }
+
+  .modal { padding: 0; align-items: flex-end; }
+  .modal-caixa {
+    max-width: none;
+    max-height: 92dvh;
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    border-bottom: 0;
+    animation: subir-folha 280ms var(--ease-expo);
+  }
+  .modal-rodape { border-radius: 0; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+  @keyframes subir-folha {
+    from { transform: translateY(100%); }
+    to { transform: none; }
+  }
+
+  .drawer { width: 100vw; border-left: 0; }
+}
+
+@media (max-width: 400px) {
+  .grade-kpi { grid-template-columns: 1fr; }
+}
+
+/* Colunas secundárias só somem quando o espaço aperta de verdade. */
+@media (max-width: 1100px) {
+  .col-secundaria { display: none; }
+}
+
+/* --------------------------------------------------------------------------
+   Lista de cartões (a tabela no celular)
+   -------------------------------------------------------------------------- */
+.lista-cartoes { display: flex; flex-direction: column; gap: 10px; }
+
+.cartao-linha {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 14px;
+  text-align: left;
+  width: 100%;
+  transition: border-color var(--t-fast), background-color var(--t-fast);
+}
+.cartao-linha.clicavel { cursor: pointer; }
+.cartao-linha.clicavel:hover { border-color: rgba(225, 14, 33, .4); background: var(--surface-2); }
+.cartao-linha-topo {
+  font-size: .9375rem;
+  font-weight: 600;
+  color: var(--fg);
+  padding-bottom: 11px;
+  margin-bottom: 11px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.cartao-linha-campos { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
+.cartao-linha-campos > div { min-width: 0; }
+.cartao-linha-campos dt {
+  font-size: .625rem;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  margin-bottom: 2px;
+}
+.cartao-linha-campos dd { font-size: .8438rem; color: var(--fg-muted); }
+.cartao-linha-acoes {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid var(--line-soft);
+}
+
+/* --------------------------------------------------------------------------
+   Kanban no celular: uma coluna por vez, com rolagem por encaixe
+   -------------------------------------------------------------------------- */
+@media (max-width: 767px) {
+  .kanban { gap: 10px; padding-bottom: 8px; scroll-snap-type: x mandatory; }
+  .kanban-coluna { flex: 0 0 86vw; max-height: none; }
+  .kanban-lista { max-height: 62dvh; }
+}
+
+/* --------------------------------------------------------------------------
+   Impressão: relatórios saem legíveis em papel branco
+   -------------------------------------------------------------------------- */
+@media print {
+  .sidebar, .topbar, .pagina-acoes, .filtros, .paginacao, .toasts { display: none !important; }
+  .conteudo { margin-left: 0 !important; }
+  body { background: #fff; color: #000; }
+  .card, .tabela-envolucro { border-color: #ccc; background: #fff; }
+  .tabela tbody td, .tabela thead th { color: #000; background: #fff; }
+  .stat-valor, h1, h2, h3 { color: #000; }
+}
+
+/* --------------------------------------------------------------------------
+   Menu: o botão e a sidebar trocam de comportamento no MESMO ponto (1024px).
+   Se os dois breakpoints divergirem, existe uma faixa de largura em que a
+   sidebar sai da tela e não há botão para trazê-la de volta.
+   -------------------------------------------------------------------------- */
+.btn-menu { display: none; }
+.btn-recolher { display: inline-flex; }
+
+@media (max-width: 1023px) {
+  .btn-menu { display: inline-flex; }
+  /* Recolher só faz sentido quando a sidebar é fixa. */
+  .btn-recolher { display: none; }
+}

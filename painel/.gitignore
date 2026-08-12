@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.vite/
+
+# Variaveis de ambiente reais nunca entram no Git.
+.env
+.env.local
+.env.*.local
+!.env.example
+
+*.log
+.DS_Store

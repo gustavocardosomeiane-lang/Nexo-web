@@ -1,0 +1,110 @@
+/* ==========================================================================
+   Reset e fundamentos
+   ========================================================================== */
+
+*, *::before, *::after { box-sizing: border-box; }
+* { margin: 0; }
+
+html {
+  -webkit-text-size-adjust: 100%;
+  height: 100%;
+}
+
+body {
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--fg-muted);
+  font-family: var(--fonte);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+#root { min-height: 100vh; min-height: 100dvh; }
+
+img, svg, video { display: block; max-width: 100%; }
+img { height: auto; }
+
+button, input, select, textarea { font: inherit; color: inherit; }
+button { background: none; border: 0; cursor: pointer; }
+ul, ol { list-style: none; padding: 0; }
+a { color: inherit; text-decoration: none; }
+
+h1, h2, h3, h4, h5 {
+  color: var(--fg);
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -.02em;
+}
+
+/* Titulos grandes com tracking negativo: e o que separa premium de generico
+   (specs/design.md § 3). */
+h1 { font-size: clamp(1.5rem, 2.4vw, 1.875rem); letter-spacing: -.03em; font-weight: 800; }
+h2 { font-size: clamp(1.15rem, 1.8vw, 1.375rem); letter-spacing: -.025em; }
+h3 { font-size: 1.0625rem; }
+
+[hidden] { display: none !important; }
+
+/* ---- Foco: anel vermelho de 2px, sempre visivel, nunca removido ---- */
+:focus { outline: none; }
+:focus-visible {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+/* ---- Selecao ---- */
+::selection { background: var(--red-tint-2); color: var(--fg); }
+
+/* ---- Barra de rolagem: discreta, combinando com a superficie ---- */
+* { scrollbar-width: thin; scrollbar-color: #2A2E38 transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #2A2E38;
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: var(--r-full);
+}
+::-webkit-scrollbar-thumb:hover { background: #3A3F4C; background-clip: content-box; }
+
+/* ---- Autofill do Chrome: por padrao pinta o campo de azul claro ---- */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--fg);
+  -webkit-box-shadow: 0 0 0 1000px var(--surface-2) inset;
+  caret-color: var(--fg);
+  transition: background-color 9999s ease-out;
+}
+
+/* ---- Utilitarios ---- */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.truncar {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mono { font-family: var(--fonte-mono); font-size: .8125rem; }
+
+/* ---- Movimento reduzido: nao e opcional (specs/design.md § 7) ---- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

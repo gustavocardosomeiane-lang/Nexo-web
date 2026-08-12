@@ -1,0 +1,147 @@
+/* ==========================================================================
+   Gráficos
+   ========================================================================== */
+
+.grafico { display: flex; flex-direction: column; }
+.grafico-corpo { padding: 6px 0 0; flex: 1; display: flex; flex-direction: column; }
+
+.grafico-area { position: relative; width: 100%; padding: 0 4px; }
+.grafico-area svg { display: block; overflow: visible; }
+
+/* Eixos recessivos: a informação é a marca, não a régua. */
+.grafico-eixo {
+  fill: var(--eixo);
+  font-size: 10.5px;
+  font-family: var(--fonte);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --------------------------------------------------------------------------
+   Tooltip
+   -------------------------------------------------------------------------- */
+.grafico-tooltip {
+  position: absolute;
+  z-index: 5;
+  min-width: 132px;
+  padding: 9px 11px;
+  background: var(--vidro);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--vidro-borda);
+  border-radius: var(--r-sm);
+  box-shadow: var(--sombra-3);
+  pointer-events: none;
+  font-size: .75rem;
+}
+.grafico-tooltip-titulo {
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 5px;
+  font-size: .75rem;
+}
+.grafico-tooltip-linha { display: flex; align-items: center; gap: 7px; }
+.grafico-tooltip-rotulo { color: var(--fg-dim); }
+.grafico-tooltip-valor {
+  margin-left: auto;
+  font-weight: 700;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --------------------------------------------------------------------------
+   Legenda
+   -------------------------------------------------------------------------- */
+.legenda {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 14px 20px 18px;
+  font-size: .75rem;
+  color: var(--fg-dim);
+}
+.legenda li { display: flex; align-items: center; gap: 6px; }
+.legenda-marca {
+  width: 9px; height: 9px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+/* --------------------------------------------------------------------------
+   Barras horizontais
+   -------------------------------------------------------------------------- */
+.barras-h { display: flex; flex-direction: column; gap: 13px; padding: 16px 20px 20px; }
+.barras-h-topo {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 5px;
+}
+.barras-h-rotulo { font-size: .8125rem; color: var(--fg-muted); min-width: 0; }
+.barras-h-valor {
+  font-size: .8125rem;
+  font-weight: 700;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.barras-h-trilho {
+  height: 8px;
+  border-radius: var(--r-full);
+  background: rgba(255, 255, 255, .05);
+  overflow: hidden;
+}
+.barras-h-barra {
+  height: 100%;
+  border-radius: var(--r-full);
+  transition: width 700ms var(--ease-expo);
+}
+
+/* --------------------------------------------------------------------------
+   Rosca
+   -------------------------------------------------------------------------- */
+.rosca {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  padding: 16px 20px 4px;
+  flex-wrap: wrap;
+}
+.rosca svg { flex-shrink: 0; margin-inline: auto; }
+.rosca-total {
+  fill: var(--fg);
+  font-size: 15px;
+  font-weight: 800;
+  font-family: var(--fonte);
+  letter-spacing: -.02em;
+}
+.rosca-itens {
+  flex: 1 1 190px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 0;
+}
+.rosca-itens li {
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 9px;
+  font-size: .8125rem;
+}
+.rosca-item-rotulo { color: var(--fg-muted); }
+.rosca-item-valor {
+  font-weight: 600;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.rosca-item-pct {
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+  min-width: 34px;
+  text-align: right;
+}
+
+@media (max-width: 520px) {
+  .rosca { flex-direction: column; align-items: stretch; gap: 14px; }
+  .rosca-itens { flex: 1 1 auto; }
+}
