@@ -31,7 +31,7 @@ Antes de qualquer alteração, leia:
 - **Nunca invente** clientes, projetos, números, prêmios, depoimentos ou métricas.
   O portfólio usa **somente** os trabalhos reais da pasta `/portfolio`.
 - **Nunca** coloque chaves, tokens, senhas ou credenciais no código do frontend.
-- Os **valores dos planos** (R$ 1.500 / R$ 3.500 / R$ 6.000) são fixos. Não altere.
+- Os **valores dos planos** (R$ 1.400 / R$ 2.500 / R$ 4.000) são fixos. Não altere.
 - O nome da marca é **NEXO WEB** e não muda.
 - Dado de contato único e centralizado: constante `WHATSAPP` em `assets/js/config.js`.
   Alterou lá, alterou no site inteiro. Não espalhe o número pelo HTML.
