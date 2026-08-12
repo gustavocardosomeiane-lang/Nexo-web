@@ -16,7 +16,7 @@ import { useColecao } from '@/hooks/useColecao';
 import { useAsync } from '@/hooks/useAsync';
 import { useAuth } from '@/auth/AuthContext';
 import { useToast } from '@/components/ui/Toast';
-import { LEAD_STATUS, type Lead, type LeadStatus, type Service } from '@/types';
+import { LEAD_STATUS, type Lead, type LeadStatus, type Service, type Tag } from '@/types';
 import { brl, formatarData, formatarTelefone, tempoRelativo, whatsappLink } from '@/lib/format';
 import { DataTable, type Coluna } from '@/components/ui/DataTable';
 import { Paginacao } from '@/components/ui/Pagination';
@@ -30,6 +30,7 @@ import {
   CampoTexto,
   CampoTextarea,
   Eyebrow,
+  Switch,
   Vazio,
 } from '@/components/ui/primitives';
 import { Icon } from '@/components/ui/Icon';
@@ -58,6 +59,10 @@ const VAZIO_FORM = {
   proxima_acao: '',
   proxima_acao_em: '',
   observacoes: '',
+  /** Listas de prospecção às quais o lead pertence. */
+  tags: [] as string[],
+  /** Trava permanente contra disparo. Ver campanhas.ts. */
+  nao_contatar: false,
 };
 
 type FormLead = typeof VAZIO_FORM;
@@ -74,6 +79,7 @@ export function Leads() {
   });
 
   const servicos = useAsync(() => db.servicos.todos(), [], [] as Service[]);
+  const tags = useAsync(() => db.tags.todos(), [], [] as Tag[]);
   const nomeServico = useMemo(
     () => new Map(servicos.dado.map((s) => [s.id, s.nome])),
     [servicos.dado],
@@ -459,6 +465,7 @@ export function Leads() {
         <FormularioLead
           lead={editando}
           servicos={servicos.dado}
+          tags={tags.dado}
           aoFechar={() => {
             setCriando(false);
             setEditando(null);
@@ -750,11 +757,13 @@ function DetalheLead({
 function FormularioLead({
   lead,
   servicos,
+  tags,
   aoFechar,
   aoSalvar,
 }: {
   lead: Lead | null;
   servicos: Service[];
+  tags: Tag[];
   aoFechar: () => void;
   aoSalvar: () => void;
 }) {
@@ -774,13 +783,17 @@ function FormularioLead({
           proxima_acao: lead.proxima_acao ?? '',
           proxima_acao_em: lead.proxima_acao_em ?? '',
           observacoes: lead.observacoes ?? '',
+          tags: lead.tags ?? [],
+          nao_contatar: lead.nao_contatar ?? false,
         }
       : VAZIO_FORM,
   );
   const [erros, setErros] = useState<Partial<Record<keyof FormLead, string>>>({});
   const [salvando, setSalvando] = useState(false);
 
-  const definir = (campo: keyof FormLead, valor: string) =>
+  // Genérico no campo para o tipo do valor acompanhar: `tags` é array e
+  // `nao_contatar` é booleano, não dá para fixar em string.
+  const definir = <K extends keyof FormLead>(campo: K, valor: FormLead[K]) =>
     setForm((atual) => ({ ...atual, [campo]: valor }));
 
   async function salvar() {
@@ -813,6 +826,8 @@ function FormularioLead({
       servico_interesse_id: form.servico_interesse_id || null,
       proxima_acao: limparTexto(form.proxima_acao, 160) || null,
       proxima_acao_em: form.proxima_acao_em || null,
+      tags: form.tags,
+      nao_contatar: form.nao_contatar,
     };
 
     try {
@@ -906,7 +921,7 @@ function FormularioLead({
           rotulo="Etapa"
           value={form.status}
           opcoes={LEAD_STATUS.map((s) => ({ valor: s, rotulo: LEAD[s].rotulo }))}
-          onChange={(e) => definir('status', e.target.value)}
+          onChange={(e) => definir('status', e.target.value as LeadStatus)}
         />
         <CampoSelect
           rotulo="Serviço de interesse"
@@ -954,6 +969,52 @@ function FormularioLead({
           onChange={(e) => definir('observacoes', e.target.value)}
           maxLength={2000}
         />
+
+        {/* ---- Prospecção ---- */}
+        <div className="col-inteira campo">
+          <span className="campo-rotulo">Listas de prospecção</span>
+          <div className="chips">
+            {tags.length === 0 ? (
+              <span className="campo-ajuda">
+                Nenhuma lista cadastrada ainda. Crie em Automações.
+              </span>
+            ) : (
+              tags.map((t) => {
+                const marcada = form.tags.includes(t.id);
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className="chip"
+                    aria-pressed={marcada}
+                    onClick={() =>
+                      setForm((atual) => ({
+                        ...atual,
+                        tags: marcada
+                          ? atual.tags.filter((x) => x !== t.id)
+                          : [...atual.tags, t.id],
+                      }))
+                    }
+                  >
+                    {t.nome}
+                  </button>
+                );
+              })
+            )}
+          </div>
+          <span className="campo-ajuda">
+            Uma campanha só dispara para quem carrega a lista escolhida.
+          </span>
+        </div>
+
+        <div className="col-inteira">
+          <Switch
+            rotulo="Não contatar"
+            descricao="Exclui este contato de qualquer campanha, para sempre. Use em contato pessoal, fornecedor ou quem pediu para não receber mensagem."
+            checked={form.nao_contatar}
+            onChange={(e) => definir('nao_contatar', e.target.checked)}
+          />
+        </div>
       </div>
     </Modal>
   );

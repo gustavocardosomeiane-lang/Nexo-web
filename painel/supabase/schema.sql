@@ -702,3 +702,134 @@ on conflict (chave) do nothing;
 --   3. Preencha VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.
 --   4. VITE_DATA_MODE=production.
 -- =============================================================================
+
+-- =============================================================================
+-- 8. PROSPECÇÃO — tags, campanhas e controle de disparo
+--
+-- Acrescentado junto com o modo assistido do NinjaBot. Roda sobre um banco que
+-- já tenha as seções 1–7; é idempotente como o resto do arquivo.
+-- =============================================================================
+
+do $$
+begin
+  if not exists (select 1 from pg_type where typname = 'campaign_status') then
+    create type campaign_status as enum ('rascunho', 'ativa', 'pausada', 'concluida');
+  end if;
+
+  if not exists (select 1 from pg_type where typname = 'target_status') then
+    create type target_status as enum ('pendente', 'enviado', 'respondido', 'ignorado', 'falhou');
+  end if;
+end $$;
+
+-- tags -------------------------------------------------------------------------
+create table if not exists public.tags (
+  id        uuid primary key default gen_random_uuid(),
+  nome      text        not null unique check (length(trim(nome)) > 0),
+  descricao text,
+  criado_em timestamptz not null default now()
+);
+
+-- Campos novos em leads. ADD COLUMN IF NOT EXISTS deixa rodar em banco já populado.
+alter table public.leads add column if not exists tags text[] not null default '{}';
+alter table public.leads add column if not exists nao_contatar boolean not null default false;
+
+comment on column public.leads.nao_contatar is
+  'Trava permanente contra disparo: contato pessoal, fornecedor ou quem pediu para não receber. Nenhuma campanha ignora este campo.';
+
+-- Índice GIN: `tags @> ARRAY['x']` fica rápido mesmo com muitos leads.
+create index if not exists idx_leads_tags on public.leads using gin (tags);
+create index if not exists idx_leads_contatavel on public.leads (status) where not nao_contatar;
+
+-- campaigns --------------------------------------------------------------------
+create table if not exists public.campaigns (
+  id            uuid primary key default gen_random_uuid(),
+  nome          text            not null check (length(trim(nome)) > 0),
+  -- Guarda o id da tag como texto: a campanha continua legível mesmo que a tag
+  -- seja renomeada, e apagar uma tag não apaga o histórico da campanha.
+  tag           text            not null,
+  mensagem      text            not null check (length(trim(mensagem)) >= 20),
+  status        campaign_status not null default 'rascunho',
+  tamanho_lote  smallint        not null default 10 check (tamanho_lote between 1 and 50),
+  criado_em     timestamptz     not null default now(),
+  atualizado_em timestamptz     not null default now(),
+  iniciada_em   timestamptz,
+  concluida_em  timestamptz
+);
+
+-- campaign_targets --------------------------------------------------------------
+-- O LIVRO-CAIXA DO DISPARO. O UNIQUE abaixo é a trava anti-duplicidade: nem
+-- recarregar a tela, nem dois operadores ao mesmo tempo conseguem contatar o
+-- mesmo lead duas vezes na mesma campanha.
+create table if not exists public.campaign_targets (
+  id            uuid          primary key default gen_random_uuid(),
+  campanha_id   uuid          not null references public.campaigns(id) on delete cascade,
+  lead_id       uuid          not null references public.leads(id)     on delete cascade,
+  status        target_status not null default 'pendente',
+  lote          smallint      check (lote is null or lote > 0),
+  enviado_em    timestamptz,
+  respondido_em timestamptz,
+  observacao    text,
+  criado_em     timestamptz   not null default now(),
+  atualizado_em timestamptz   not null default now(),
+  constraint alvo_unico_por_campanha unique (campanha_id, lead_id)
+);
+
+create index if not exists idx_targets_campanha on public.campaign_targets (campanha_id, status);
+create index if not exists idx_targets_lead     on public.campaign_targets (lead_id);
+-- Consulta da carência: "quem foi contatado nos últimos 30 dias".
+create index if not exists idx_targets_enviado  on public.campaign_targets (enviado_em)
+  where enviado_em is not null;
+
+-- Triggers de atualizado_em
+do $$
+declare t text;
+begin
+  foreach t in array array['campaigns', 'campaign_targets']
+  loop
+    execute format('drop trigger if exists trg_%s_atualizado_em on public.%I', t, t);
+    execute format(
+      'create trigger trg_%s_atualizado_em before update on public.%I
+       for each row execute function public.tocar_atualizado_em()', t, t
+    );
+  end loop;
+end $$;
+
+-- RLS ---------------------------------------------------------------------------
+alter table public.tags             enable row level security;
+alter table public.campaigns        enable row level security;
+alter table public.campaign_targets enable row level security;
+
+drop policy if exists tags_ler on public.tags;
+create policy tags_ler on public.tags
+  for select using (public.eh_equipe());
+
+drop policy if exists tags_escrever on public.tags;
+create policy tags_escrever on public.tags
+  for all using (public.tem_papel(array['administrador', 'vendedor']::user_role[]))
+  with check (public.tem_papel(array['administrador', 'vendedor']::user_role[]));
+
+drop policy if exists campaigns_ler on public.campaigns;
+create policy campaigns_ler on public.campaigns
+  for select using (public.tem_papel(array['administrador', 'vendedor']::user_role[]));
+
+drop policy if exists campaigns_escrever on public.campaigns;
+create policy campaigns_escrever on public.campaigns
+  for all using (public.tem_papel(array['administrador', 'vendedor']::user_role[]))
+  with check (public.tem_papel(array['administrador', 'vendedor']::user_role[]));
+
+drop policy if exists targets_ler on public.campaign_targets;
+create policy targets_ler on public.campaign_targets
+  for select using (public.tem_papel(array['administrador', 'vendedor']::user_role[]));
+
+drop policy if exists targets_escrever on public.campaign_targets;
+create policy targets_escrever on public.campaign_targets
+  for all using (public.tem_papel(array['administrador', 'vendedor']::user_role[]))
+  with check (public.tem_papel(array['administrador', 'vendedor']::user_role[]));
+
+-- Listas iniciais. Ajuste ou apague conforme a sua operação.
+insert into public.tags (nome, descricao) values
+  ('Comércio local', 'Lojas e serviços de bairro'),
+  ('Clínicas e consultórios', 'Saúde e bem-estar'),
+  ('Prestadores de serviço', 'Profissionais liberais'),
+  ('Sem site', 'Negócios sem presença digital')
+on conflict (nome) do nothing;

@@ -42,18 +42,55 @@ export const supabaseEnv = {
 export const paymentEnv = {
   /** Identificador do adaptador. `none` = nenhum gateway contratado ainda. */
   provider: texto(import.meta.env.VITE_PAYMENT_PROVIDER) || 'none',
+  /**
+   * Só para adaptadores que falam com uma API externa direto do navegador.
+   * O Asaas NÃO usa: ele passa pelas funções em `/api/asaas`, na mesma origem,
+   * porque a chave não pode sair do servidor.
+   */
   apiUrl: texto(import.meta.env.VITE_PAYMENT_API_URL),
   /** Chave publica de checkout. Secret key NUNCA chega ate aqui. */
   publicKey: texto(import.meta.env.VITE_PAYMENT_PUBLIC_KEY),
+
+  /**
+   * Adaptadores servidos pelas nossas próprias funções serverless. Para eles,
+   * exigir `VITE_PAYMENT_API_URL` seria pedir uma configuração que não existe.
+   */
+  get viaServidor(): boolean {
+    return this.provider === 'asaas';
+  },
+
   get configurado(): boolean {
-    return this.provider !== 'none' && this.apiUrl !== '';
+    if (this.provider === 'none') return false;
+    return this.viaServidor || this.apiUrl !== '';
   },
 };
 
+/**
+ * NinjaBot.
+ *
+ * MODO ASSISTIDO é o padrão e o que está em uso: o NinjaBot que operamos não
+ * expõe API pública, então o painel organiza a campanha (lista, lotes, controle
+ * de quem já foi contatado) e o envio acontece no painel web do NinjaBot.
+ *
+ * `api` fica reservado para quando existir uma API de verdade. Nenhum endpoint
+ * foi inventado — ver `src/integrations/ninjabot/NinjaBotProvider.ts`.
+ */
+export type ModoNinjaBot = 'assistido' | 'api';
+
 export const ninjabotEnv = {
+  modo: (texto(import.meta.env.VITE_NINJABOT_MODO).toLowerCase() === 'api'
+    ? 'api'
+    : 'assistido') as ModoNinjaBot,
   provider: texto(import.meta.env.VITE_NINJABOT_PROVIDER) || 'none',
   apiUrl: texto(import.meta.env.VITE_NINJABOT_API_URL),
+
+  /** Modo assistido está sempre operante: não depende de integração nenhuma. */
+  get operante(): boolean {
+    return this.modo === 'assistido' || (this.provider !== 'none' && this.apiUrl !== '');
+  },
+
+  /** `true` só quando existe integração HTTP de verdade configurada. */
   get configurado(): boolean {
-    return this.provider !== 'none' && this.apiUrl !== '';
+    return this.modo === 'api' && this.provider !== 'none' && this.apiUrl !== '';
   },
 };

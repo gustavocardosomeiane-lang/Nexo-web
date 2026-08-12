@@ -33,6 +33,7 @@ const Projetos = lazy(() => import('@/pages/Projetos').then((m) => ({ default: m
 const Financeiro = lazy(() => import('@/pages/Financeiro').then((m) => ({ default: m.Financeiro })));
 const Conversas = lazy(() => import('@/pages/Conversas').then((m) => ({ default: m.Conversas })));
 const Automacoes = lazy(() => import('@/pages/Automacoes').then((m) => ({ default: m.Automacoes })));
+const Campanhas = lazy(() => import('@/pages/Campanhas').then((m) => ({ default: m.Campanhas })));
 const Notificacoes = lazy(() =>
   import('@/pages/Notificacoes').then((m) => ({ default: m.Notificacoes })),
 );
@@ -145,6 +146,7 @@ export function App() {
 
                   <Route element={<ExigeModulo modulo="automacoes" />}>
                     <Route path="automacoes" element={<Automacoes />} />
+                    <Route path="campanhas" element={<Campanhas />} />
                   </Route>
 
                   <Route element={<ExigeModulo modulo="relatorios" />}>

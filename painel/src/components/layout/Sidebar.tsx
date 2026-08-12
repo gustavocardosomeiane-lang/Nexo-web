@@ -29,6 +29,7 @@ const GRUPOS: { titulo: string; itens: ItemNav[] }[] = [
       { para: '/leads', rotulo: 'Leads', icone: 'leads', modulo: 'leads' },
       { para: '/clientes', rotulo: 'Clientes', icone: 'clientes', modulo: 'clientes' },
       { para: '/conversas', rotulo: 'Conversas', icone: 'conversas', modulo: 'conversas' },
+      { para: '/campanhas', rotulo: 'Campanhas', icone: 'enviar', modulo: 'automacoes' },
     ],
   },
   {

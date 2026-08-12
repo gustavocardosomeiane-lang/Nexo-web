@@ -12,11 +12,16 @@
 import { paymentEnv } from '@/lib/env';
 import { db } from '@/data';
 import { nullPaymentProvider, type PaymentProvider } from './PaymentProvider';
+import { asaasProvider } from './asaasProvider';
 import type { PortaWebhook } from './webhookHandler';
 
-/** Nenhum adaptador real existe ainda — nenhum gateway foi contratado. */
+/**
+ * Adaptadores disponiveis.
+ * `none` recusa toda operacao com mensagem explicativa, em vez de simular.
+ */
 const ADAPTADORES: Record<string, PaymentProvider> = {
   none: nullPaymentProvider,
+  asaas: asaasProvider,
 };
 
 export const paymentProvider: PaymentProvider =

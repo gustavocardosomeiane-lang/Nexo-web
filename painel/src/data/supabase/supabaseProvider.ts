@@ -13,6 +13,8 @@
  */
 
 import type {
+  Campaign,
+  CampaignTarget,
   Client,
   Conversation,
   DashboardMetrics,
@@ -29,6 +31,7 @@ import type {
   SeriePonto,
   Service,
   Settings,
+  Tag,
   User,
   WebhookEvent,
 } from '@/types';
@@ -49,6 +52,9 @@ const TABELA = {
   conversas: 'conversations',
   notificacoes: 'notifications',
   eventosWebhook: 'webhook_events',
+  tags: 'tags',
+  campanhas: 'campaigns',
+  alvosCampanha: 'campaign_targets',
 } as const;
 
 interface ConfigTabela<T> {
@@ -211,6 +217,26 @@ const eventosWebhook = criarRepositorio<WebhookEvent>(TABELA.eventosWebhook, {
   ordenarPorPadrao: 'recebido_em',
 });
 
+const tags = criarRepositorio<Tag>(TABELA.tags, {
+  camposBusca: ['nome', 'descricao'],
+  campoData: 'criado_em',
+  ordenarPorPadrao: 'nome',
+  ordemPadrao: 'asc',
+});
+
+const campanhas = criarRepositorio<Campaign>(TABELA.campanhas, {
+  camposBusca: ['nome', 'tag', 'mensagem'],
+  campoData: 'criado_em',
+  ordenarPorPadrao: 'criado_em',
+});
+
+const alvosCampanha = criarRepositorio<CampaignTarget>(TABELA.alvosCampanha, {
+  camposBusca: ['observacao'],
+  campoData: 'criado_em',
+  ordenarPorPadrao: 'criado_em',
+  ordemPadrao: 'asc',
+});
+
 /* --------------------------------------------------------------------------
    Analytics
    -------------------------------------------------------------------------- */
@@ -314,6 +340,10 @@ export const supabaseProvider: DatabaseProvider = {
   conversas,
   notificacoes,
   eventosWebhook,
+
+  tags,
+  campanhas,
+  alvosCampanha,
 
   analytics,
 

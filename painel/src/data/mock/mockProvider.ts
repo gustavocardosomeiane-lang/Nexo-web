@@ -11,6 +11,8 @@
  */
 
 import type {
+  Campaign,
+  CampaignTarget,
   Client,
   Conversation,
   DashboardMetrics,
@@ -27,6 +29,7 @@ import type {
   SeriePonto,
   Service,
   Settings,
+  Tag,
   User,
   WebhookEvent,
 } from '@/types';
@@ -35,6 +38,8 @@ import { aplicarQuery, paginar, type QueryConfig } from '../query';
 import * as calc from '../analytics';
 import { uuid } from '@/lib/id';
 import {
+  alvosCampanhaMock,
+  campanhasMock,
   clientesMock,
   configuracoesMock,
   conversasMock,
@@ -45,6 +50,7 @@ import {
   parcelasMock,
   projetosMock,
   servicosMock,
+  tagsMock,
   usuariosMock,
   vendasMock,
 } from './seed';
@@ -235,6 +241,30 @@ const eventosWebhook = criarRepositorio<WebhookEvent & Record<string, unknown>>(
   ordenarPorPadrao: 'recebido_em',
 });
 
+const tags = criarRepositorio<Tag & Record<string, unknown>>('tags', tagsMock as never, {
+  camposBusca: ['nome', 'descricao'],
+  campoData: 'criado_em',
+  ordenarPorPadrao: 'nome',
+  ordemPadrao: 'asc',
+});
+
+const campanhas = criarRepositorio<Campaign & Record<string, unknown>>('campanhas', campanhasMock as never, {
+  camposBusca: ['nome', 'tag', 'mensagem'],
+  campoData: 'criado_em',
+  ordenarPorPadrao: 'criado_em',
+});
+
+const alvosCampanha = criarRepositorio<CampaignTarget & Record<string, unknown>>(
+  'alvos-campanha',
+  alvosCampanhaMock as never,
+  {
+    camposBusca: ['observacao'],
+    campoData: 'criado_em',
+    ordenarPorPadrao: 'criado_em',
+    ordemPadrao: 'asc',
+  },
+);
+
 /* --------------------------------------------------------------------------
    Analytics
    -------------------------------------------------------------------------- */
@@ -311,6 +341,10 @@ export const mockProvider: DatabaseProvider = {
   conversas: conversas as unknown as Repository<Conversation>,
   notificacoes: notificacoes as unknown as Repository<Notification>,
   eventosWebhook: eventosWebhook as unknown as Repository<WebhookEvent>,
+
+  tags: tags as unknown as Repository<Tag>,
+  campanhas: campanhas as unknown as Repository<Campaign>,
+  alvosCampanha: alvosCampanha as unknown as Repository<CampaignTarget>,
 
   analytics,
 

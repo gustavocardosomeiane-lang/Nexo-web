@@ -16,6 +16,8 @@
  */
 
 import type {
+  Campaign,
+  CampaignTarget,
   Client,
   Conversation,
   Installment,
@@ -29,6 +31,7 @@ import type {
   Sale,
   Service,
   Settings,
+  Tag,
   User,
   WebhookEvent,
 } from '@/types';
@@ -234,6 +237,19 @@ const CAMPANHAS = [
   null,
 ];
 
+/**
+ * Tags/listas de prospecção. São elas que definem o público de uma campanha:
+ * um lead só recebe disparo se carregar a tag escolhida.
+ */
+export const tagsMock: Tag[] = [
+  { id: 'tag-comercio', nome: 'Comércio local', descricao: 'Lojas e serviços de bairro', criado_em: instante(-200) },
+  { id: 'tag-clinicas', nome: 'Clínicas e consultórios', descricao: 'Saúde e bem-estar', criado_em: instante(-180) },
+  { id: 'tag-servicos', nome: 'Prestadores de serviço', descricao: 'Profissionais liberais', criado_em: instante(-150) },
+  { id: 'tag-sem-site', nome: 'Sem site', descricao: 'Negócios sem presença digital', criado_em: instante(-120) },
+];
+
+const IDS_TAGS = tagsMock.map((t) => t.id);
+
 const ORIGENS = ['site', 'whatsapp', 'indicacao', 'instagram', 'google', 'ninjabot'] as const;
 
 const PROXIMAS_ACOES = [
@@ -348,6 +364,11 @@ function gerar(): Gerado {
       whatsapp: tel,
       email: emailDe(nome, empresa),
       origem,
+      // Um a três rótulos por lead, para as campanhas terem público real.
+      tags: IDS_TAGS.filter(() => chance(0.4)).slice(0, 3),
+      // ~4% marcados como contato pessoal / não perturbe. Existem para provar
+      // que a trava funciona: eles nunca entram em lote nenhum.
+      nao_contatar: chance(0.04),
       campanha,
       data_entrada: dia(entradaOffset),
       responsavel_id: escolher(['usr-admin', 'usr-vendas']),
@@ -673,6 +694,29 @@ export const notificacoesMock = dados.notificacoes;
  * que o fluxo possa ser visto funcionando de ponta a ponta.
  */
 export const eventosWebhookMock: WebhookEvent[] = [];
+
+/**
+ * Uma campanha em rascunho, para a tela abrir com algo real de operar.
+ * Sem alvos gerados: quem gera é você, depois de conferir a prévia do público.
+ */
+export const campanhasMock: Campaign[] = [
+  {
+    id: 'camp-comercio-local',
+    nome: 'Prospecção — Comércio local',
+    tag: 'tag-comercio',
+    mensagem:
+      'Olá, {{primeiro_nome}}! Aqui é da NEXO WEB. Trabalhamos com criação de sites profissionais e queria te mostrar dois exemplos de negócios parecidos com o seu. Posso mandar?',
+    status: 'rascunho',
+    tamanho_lote: 10,
+    criado_em: instante(-6),
+    atualizado_em: instante(-6),
+    iniciada_em: null,
+    concluida_em: null,
+  },
+];
+
+/** Vazio de propósito: nenhum disparo foi feito ainda. */
+export const alvosCampanhaMock: CampaignTarget[] = [];
 
 export const configuracoesMock: Settings = {
   empresa: {

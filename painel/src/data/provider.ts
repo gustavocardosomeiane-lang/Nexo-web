@@ -11,6 +11,8 @@
  */
 
 import type {
+  Campaign,
+  CampaignTarget,
   Client,
   Conversation,
   DashboardMetrics,
@@ -27,6 +29,7 @@ import type {
   SeriePonto,
   Service,
   Settings,
+  Tag,
   User,
   WebhookEvent,
 } from '@/types';
@@ -77,6 +80,12 @@ export interface DatabaseProvider {
   conversas: Repository<Conversation>;
   notificacoes: Repository<Notification>;
   eventosWebhook: Repository<WebhookEvent>;
+
+  /** Etiquetas/listas usadas para escolher o público das campanhas. */
+  tags: Repository<Tag>;
+  campanhas: Repository<Campaign>;
+  /** Livro-caixa do disparo: um lead por campanha, sem repetição. */
+  alvosCampanha: Repository<CampaignTarget>;
 
   analytics: Analytics;
 

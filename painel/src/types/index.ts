@@ -61,6 +61,17 @@ export interface Lead {
   whatsapp: string | null;
   email: string | null;
   origem: LeadOrigem;
+  /**
+   * Etiquetas/listas. É por elas que uma campanha escolhe o público —
+   * o disparo nunca sai para quem não carrega a tag selecionada.
+   */
+  tags: string[];
+  /**
+   * Trava de proteção. `true` exclui o contato de QUALQUER disparo, para
+   * sempre. É onde entram contato pessoal, fornecedor, amigo e quem pediu
+   * para não receber mensagem. Nenhuma campanha ignora este campo.
+   */
+  nao_contatar: boolean;
   campanha: string | null;
   data_entrada: string;
   responsavel_id: string | null;
@@ -73,6 +84,69 @@ export interface Lead {
   servico_interesse_id: string | null;
   /** Preenchido quando o lead vira cliente. Mantem a rastreabilidade do funil. */
   cliente_id: string | null;
+  criado_em: string;
+  atualizado_em: string;
+}
+
+/* ---------------------------------------------------------------------------
+   Tags / listas de prospecção
+   --------------------------------------------------------------------------- */
+
+export interface Tag {
+  id: string;
+  nome: string;
+  descricao: string | null;
+  criado_em: string;
+}
+
+/* ---------------------------------------------------------------------------
+   Campanhas de prospecção (NinjaBot — modo assistido)
+   --------------------------------------------------------------------------- */
+
+export const CAMPAIGN_STATUS = ['rascunho', 'ativa', 'pausada', 'concluida'] as const;
+export type CampaignStatus = (typeof CAMPAIGN_STATUS)[number];
+
+export interface Campaign {
+  id: string;
+  nome: string;
+  /** Tag que define o público. Um lead só entra se carregar esta tag. */
+  tag: string;
+  /**
+   * Texto da primeira mensagem. Aceita `{{nome}}`, `{{primeiro_nome}}` e
+   * `{{empresa}}`, substituídos por lead na hora de montar o link.
+   */
+  mensagem: string;
+  status: CampaignStatus;
+  /** Quantos contatos por lote. Padrão 10. */
+  tamanho_lote: number;
+  criado_em: string;
+  atualizado_em: string;
+  iniciada_em: string | null;
+  concluida_em: string | null;
+}
+
+/** Situação de um lead dentro de uma campanha. */
+export const TARGET_STATUS = ['pendente', 'enviado', 'respondido', 'ignorado', 'falhou'] as const;
+export type TargetStatus = (typeof TARGET_STATUS)[number];
+
+/**
+ * O LIVRO-CAIXA DO DISPARO.
+ *
+ * Uma linha por lead por campanha, com UNIQUE(campanha_id, lead_id) no banco.
+ * É esta tabela que garante que ninguém receba a mesma campanha duas vezes,
+ * mesmo que a tela seja recarregada ou dois operadores trabalhem juntos.
+ */
+export interface CampaignTarget {
+  id: string;
+  campanha_id: string;
+  lead_id: string;
+  status: TargetStatus;
+  /** Número do lote (1, 2, 3…). Atribuído quando o lote é montado. */
+  lote: number | null;
+  enviado_em: string | null;
+  respondido_em: string | null;
+  /** Motivo, quando `ignorado` ou `falhou`. */
+  observacao: string | null;
   criado_em: string;
   atualizado_em: string;
 }

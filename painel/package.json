@@ -4,11 +4,15 @@
   "version": "1.0.0",
   "type": "module",
   "description": "Painel administrativo da NEXO WEB",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "typecheck": "tsc --noEmit",
-    "preview": "vite preview"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.api.json",
+    "preview": "vite preview",
+    "testar": "node --test --experimental-strip-types \"testes/*.test.js\""
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",
@@ -17,6 +21,7 @@
     "react-router-dom": "^6.26.2"
   },
   "devDependencies": {
+    "@types/node": "^20.16.11",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.1",
     "@vercel/node": "^5.9.9",

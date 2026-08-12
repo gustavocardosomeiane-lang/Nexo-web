@@ -10,7 +10,7 @@
  * funil, servico de interesse e valor potencial.
  */
 
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { db } from '@/data';
 import { useColecao } from '@/hooks/useColecao';
@@ -20,10 +20,13 @@ import { brl, formatarDataHora, formatarTelefone, tempoRelativo, whatsappLink } 
 import { DataTable, type Coluna } from '@/components/ui/DataTable';
 import { Paginacao } from '@/components/ui/Pagination';
 import { Drawer } from '@/components/ui/Modal';
-import { Aviso, Botao, CampoTexto, Eyebrow } from '@/components/ui/primitives';
+import { Aviso, Botao, CampoTexto, CampoTextarea, Eyebrow } from '@/components/ui/primitives';
 import { Icon } from '@/components/ui/Icon';
 import { CONVERSA, StatusConversa, StatusLead, opcoesDe } from '@/components/dominio/StatusBadge';
 import { ninjaBotConfigurado } from '@/integrations/ninjabot';
+import { registrarResposta } from '@/integrations/ninjabot/campanhas';
+import { useAuth } from '@/auth/AuthContext';
+import { useToast } from '@/components/ui/Toast';
 
 export function Conversas() {
   const colecao = useColecao<Conversation>(db.conversas, {
@@ -39,6 +42,30 @@ export function Conversas() {
   const nomeServico = useMemo(() => new Map(servicos.dado.map((s) => [s.id, s.nome])), [servicos.dado]);
 
   const [detalhe, setDetalhe] = useState<Conversation | null>(null);
+  const [resposta, setResposta] = useState("");
+  const [registrando, setRegistrando] = useState(false);
+
+  const { pode } = useAuth();
+  const toast = useToast();
+  const podeEditar = pode('conversas', 'editar');
+
+  const registrar = useCallback(
+    async (conversaId: string) => {
+      setRegistrando(true);
+      try {
+        await registrarResposta(conversaId, resposta.trim() || null);
+        toast.sucesso("Resposta registrada. O lead avançou no funil.");
+        setResposta("");
+        setDetalhe(null);
+        colecao.recarregar();
+      } catch (e) {
+        toast.erro(e instanceof Error ? e.message : "Não foi possível registrar.");
+      } finally {
+        setRegistrando(false);
+      }
+    },
+    [resposta, toast, colecao],
+  );
 
   const colunas: Coluna<Conversation>[] = useMemo(
     () => [
@@ -246,6 +273,30 @@ export function Conversas() {
                 poderá ser exibido aqui.
               </p>
             </div>
+
+            {/* O passo que faz o funil andar: no fluxo real é aqui que a IA do
+                NinjaBot assume. Como não há API, quem registra é o operador. */}
+            {podeEditar && detalhe.status !== 'em_atendimento' && detalhe.status !== 'encerrada' && (
+              <div className="pilha" style={{ gap: 8 }}>
+                <CampoTextarea
+                  rotulo="O lead respondeu?"
+                  placeholder="Cole aqui a resposta dele (opcional)"
+                  value={resposta}
+                  onChange={(e) => setResposta(e.target.value)}
+                  maxLength={1000}
+                  ajuda="Registrar move a conversa para atendimento e avança o lead no funil."
+                />
+                <Botao
+                  variante="primario"
+                  icone="conversas"
+                  bloco
+                  carregando={registrando}
+                  onClick={() => void registrar(detalhe.id)}
+                >
+                  Registrar resposta
+                </Botao>
+              </div>
+            )}
 
             {detalhe.lead_id && (
               <Link to="/leads" className="btn btn-fantasma btn-bloco">

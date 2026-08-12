@@ -6,6 +6,12 @@
       "runtimeExecutable": "node",
       "runtimeArgs": ["scripts/dev-server.js"],
       "port": 4321
+    },
+    {
+      "name": "painel",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "painel"],
+      "port": 5174
     }
   ]
 }
