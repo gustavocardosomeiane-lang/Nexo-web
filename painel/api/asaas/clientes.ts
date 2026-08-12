@@ -27,18 +27,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
+    const cliente: Record<string, string> = {
+      name,
+      cpfCnpj,
+    };
+
+    if (email) {
+      cliente.email = email;
+    }
+
+    if (phone) {
+      cliente.phone = phone;
+    }
+
     const resposta = await fetch('https://api.asaas.com/v3/customers', {
       method: 'POST',
       headers: {
         access_token: apiKey,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        name,
-        email,
-        cpfCnpj,
-        phone,
-      }),
+      body: JSON.stringify(cliente),
     });
 
     const dados = await resposta.json();
