@@ -9,11 +9,13 @@
  * com a Anthropic direto. Trocar de modelo — ou usar um mais barato para
  * tarefas simples — é trocar a implementação, sem tocar no resto.
  *
- * Sem SDK: a API da Anthropic é HTTP/JSON e o `fetch` nativo resolve. Menos
- * uma dependência, menos superfície de ataque.
+ * Sem SDK: as APIs são HTTP/JSON e o `fetch` nativo resolve. Menos uma
+ * dependência, menos superfície de ataque.
  *
- * A CHAVE VIVE SÓ AQUI, em `NEXO_AI_API_KEY`, variável de servidor sem
- * prefixo `VITE_`. Nunca chega ao navegador.
+ * AS CHAVES VIVEM SÓ AQUI, em variáveis de servidor sem prefixo `VITE_`.
+ * Nunca chegam ao navegador.
+ *   - GEMINI_API_KEY   → Google Gemini (preferencial)
+ *   - NEXO_AI_API_KEY  → Anthropic (fallback)
  * ===========================================================================
  */
 
@@ -189,7 +191,179 @@ export const anthropicProvider: ModeloProvider = {
   },
 };
 
-/** Provider ativo. Um dia isto escolhe entre vários por env. */
+/* --------------------------------------------------------------------------
+   Provider: Google Gemini
+   -------------------------------------------------------------------------- */
+
+const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+
+function modeloGemini(): string {
+  return (process.env.NEXO_AI_MODELO_GEMINI ?? 'gemini-2.0-flash').trim() || 'gemini-2.0-flash';
+}
+
+function chaveGemini(): string {
+  const k = (process.env.GEMINI_API_KEY ?? '').trim();
+  if (!k) throw new ErroModelo('GEMINI_API_KEY não configurada no servidor.', 500, 'sem_credencial');
+  return k;
+}
+
+interface GeminiPart {
+  text?: string;
+  functionCall?: { name: string; args: Record<string, unknown> };
+  functionResponse?: { name: string; response: Record<string, unknown> };
+}
+interface GeminiContent {
+  role: string;
+  parts: GeminiPart[];
+}
+
+function montarCorpoGemini(pedido: PedidoModelo) {
+  const contents: GeminiContent[] = [];
+
+  for (const m of pedido.mensagens) {
+    contents.push({
+      role: m.papel === 'assistant' ? 'model' : 'user',
+      parts: [{ text: m.conteudo }],
+    });
+  }
+
+  if (pedido.resultados?.length) {
+    if (contents.length && contents[contents.length - 1].role === 'model') {
+      contents.pop();
+    }
+    contents.push({
+      role: 'model',
+      parts: pedido.resultados.map((r) => ({
+        functionCall: { name: r.id, args: {} },
+      })),
+    });
+    contents.push({
+      role: 'user',
+      parts: pedido.resultados.map((r) => ({
+        functionResponse: {
+          name: r.id,
+          response: { result: r.conteudo },
+        },
+      })),
+    });
+  }
+
+  const merged: GeminiContent[] = [];
+  for (const c of contents) {
+    const last = merged[merged.length - 1];
+    if (last && last.role === c.role) {
+      last.parts.push(...c.parts);
+    } else {
+      merged.push({ role: c.role, parts: [...c.parts] });
+    }
+  }
+
+  if (merged.length && merged[0].role !== 'user') {
+    merged.unshift({ role: 'user', parts: [{ text: '.' }] });
+  }
+
+  const corpo: Record<string, unknown> = {
+    contents: merged,
+    generationConfig: {
+      maxOutputTokens: pedido.maxTokensSaida ?? 1024,
+    },
+  };
+
+  if (pedido.sistema) {
+    corpo.systemInstruction = { parts: [{ text: pedido.sistema }] };
+  }
+
+  if (pedido.ferramentas?.length) {
+    corpo.tools = [
+      {
+        functionDeclarations: pedido.ferramentas.map((f) => ({
+          name: f.nome,
+          description: f.descricao,
+          parameters: f.parametros,
+        })),
+      },
+    ];
+  }
+
+  return corpo;
+}
+
+function lerRespostaGemini(dados: Record<string, unknown>): RespostaModelo {
+  const candidates = Array.isArray(dados.candidates) ? dados.candidates : [];
+  const first = candidates[0] as Record<string, unknown> | undefined;
+  const content = first?.content as { parts?: GeminiPart[] } | undefined;
+  const parts = content?.parts ?? [];
+
+  let texto = '';
+  const chamadas: ChamadaFerramenta[] = [];
+
+  for (const p of parts) {
+    if (p.text) texto += p.text;
+    if (p.functionCall) {
+      chamadas.push({
+        id: p.functionCall.name,
+        nome: p.functionCall.name,
+        argumentos: p.functionCall.args ?? {},
+      });
+    }
+  }
+
+  const uso = (dados.usageMetadata as Record<string, number>) ?? {};
+  return {
+    texto: texto.trim(),
+    chamadas,
+    tokens: {
+      entrada: uso.promptTokenCount ?? 0,
+      saida: uso.candidatesTokenCount ?? 0,
+    },
+  };
+}
+
+export const geminiProvider: ModeloProvider = {
+  nome: 'gemini',
+  get configurado() {
+    return Boolean((process.env.GEMINI_API_KEY ?? '').trim());
+  },
+
+  async conversar(pedido: PedidoModelo): Promise<RespostaModelo> {
+    const modelo = modeloGemini();
+    const url = `${GEMINI_BASE}/${modelo}:generateContent?key=${chaveGemini()}`;
+
+    let resposta: Response;
+    try {
+      resposta = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(montarCorpoGemini(pedido)),
+      });
+    } catch {
+      throw new ErroModelo('Não foi possível alcançar o modelo de IA.', 502, 'rede');
+    }
+
+    const dados = (await resposta.json().catch(() => null)) as Record<string, unknown> | null;
+
+    if (!resposta.ok || !dados) {
+      const err = dados?.error as { message?: string } | undefined;
+      const detalhe = err?.message ?? `O modelo respondeu ${resposta.status}.`;
+      const status = resposta.status === 401 || resposta.status === 403 ? 500 : resposta.status;
+      throw new ErroModelo(detalhe, status, 'modelo_recusou');
+    }
+
+    const cands = Array.isArray(dados.candidates) ? dados.candidates : [];
+    if (!cands.length) {
+      const feedback = dados.promptFeedback as { blockReason?: string } | undefined;
+      if (feedback?.blockReason) {
+        throw new ErroModelo(`Conteúdo bloqueado: ${feedback.blockReason}`, 400, 'conteudo_bloqueado');
+      }
+      throw new ErroModelo('O modelo não retornou resposta.', 500, 'sem_resposta');
+    }
+
+    return lerRespostaGemini(dados);
+  },
+};
+
+/** Provider ativo: Gemini quando configurado, Anthropic como fallback. */
 export function provedorAtivo(): ModeloProvider {
+  if (geminiProvider.configurado) return geminiProvider;
   return anthropicProvider;
 }
