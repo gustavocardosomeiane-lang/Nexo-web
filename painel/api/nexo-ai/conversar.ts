@@ -23,7 +23,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { autenticar, responderNaoAutenticado, NaoAutenticado } from '../_lib/auth.js';
-import { provedorAtivo, type MensagemModelo } from '../_lib/nexo-ai/modelo.js';
+import { provedorAtivo, ErroModelo, type MensagemModelo } from '../_lib/nexo-ai/modelo.js';
 import {
   definicoesDe,
   executarFerramenta,
@@ -157,7 +157,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   } catch (e) {
     if (e instanceof NaoAutenticado) return responderNaoAutenticado(res, e);
-    console.error('[nexo-ai] erro:', e instanceof Error ? e.message : e);
+
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[nexo-ai] erro:', msg);
+
+    if (e instanceof ErroModelo) {
+      const billingKeywords = ['credit balance', 'billing', 'payment required', 'quota'];
+      const isBilling = billingKeywords.some((k) => msg.toLowerCase().includes(k));
+      if (isBilling) {
+        return res.status(502).json({
+          ok: false,
+          erro: 'A NEXO AI está temporariamente indisponível por uma questão de configuração do servidor. Avise o administrador.',
+          codigo: 'modelo_billing',
+        });
+      }
+      return res.status(e.status >= 400 && e.status < 600 ? e.status : 500).json({
+        ok: false,
+        erro: 'O modelo de IA não conseguiu responder. Tente novamente em instantes.',
+        codigo: e.codigo ?? 'modelo_erro',
+      });
+    }
+
     return res.status(500).json({ ok: false, erro: 'Falha ao conversar com a NEXO AI.' });
   }
 }

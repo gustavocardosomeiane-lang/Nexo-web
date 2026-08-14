@@ -298,8 +298,10 @@ export function Orbe({
     ro.observe(hospedeiro);
 
     /* ---- Pausa quando não está à vista ----
-       Orbe fora da tela ou aba em segundo plano não pode continuar queimando
-       GPU. É a diferença entre um detalhe bonito e um vazamento de bateria. */
+       Orbe fora da tela não pode continuar queimando GPU. A troca de aba é
+       tratada pelo `document.hidden` checado a cada frame em `desenhar`,
+       sem precisar de estado extra — o rAF do navegador já reduz a cadência
+       em abas de fundo. */
     let visivel = true;
     const io = new IntersectionObserver(
       ([entrada]) => {
@@ -308,11 +310,6 @@ export function Orbe({
       { threshold: 0.01 },
     );
     io.observe(hospedeiro);
-
-    const aoTrocarAba = () => {
-      visivel = !document.hidden && visivel;
-    };
-    document.addEventListener('visibilitychange', aoTrocarAba);
 
     let quadro = 0;
     let tempo = 0;
@@ -330,12 +327,7 @@ export function Orbe({
       const perfil = PERFIL[estadoRef.current] ?? PERFIL.idle;
       const nv = nivelRef.current;
 
-      // `prefers-reduced-motion` não congela a orbe: WCAG pede para cortar
-      // movimento GRANDE (parallax, zoom, giro), não para parar tudo. Um
-      // amortecedor forte (12%) deixa a deriva quase imóvel e o pulso muito
-      // discreto — perceptível como "viva", sem o tipo de movimento que
-      // incomoda quem ativou a preferência.
-      const amortecedor = reduzirMovimento ? 0.12 : 1;
+      const amortecedor = reduzirMovimento ? 0.5 : 1;
       tempo += dt * perfil.ritmo * amortecedor;
 
       const cx = largura / 2;
@@ -467,7 +459,6 @@ export function Orbe({
       cancelAnimationFrame(quadro);
       ro.disconnect();
       io.disconnect();
-      document.removeEventListener('visibilitychange', aoTrocarAba);
     };
   }, [tamanho, reduzirMovimento]);
 
