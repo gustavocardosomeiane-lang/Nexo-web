@@ -327,7 +327,7 @@ export function Orbe({
       const perfil = PERFIL[estadoRef.current] ?? PERFIL.idle;
       const nv = nivelRef.current;
 
-      const amortecedor = reduzirMovimento ? 0.5 : 1;
+      const amortecedor = reduzirMovimento ? 0.8 : 1;
       tempo += dt * perfil.ritmo * amortecedor;
 
       const cx = largura / 2;
