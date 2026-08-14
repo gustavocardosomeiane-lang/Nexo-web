@@ -191,14 +191,22 @@ class VozNativa implements ProvedorVoz {
       if (finalizado) cb.aoFinal?.(finalizado.trim());
     };
     rec.onerror = (e) => {
-      const motivo =
-        e.error === 'not-allowed'
-          ? 'Permissão de microfone negada.'
-          : e.error === 'no-speech'
-            ? 'Não ouvi nada. Tente de novo.'
-            : 'Falha no reconhecimento de voz.';
-      cb.aoErro?.(motivo);
-    };
+  const erros: Record<string, string> = {
+    'not-allowed': 'Permissão de microfone negada.',
+    'service-not-allowed':
+      'O serviço de reconhecimento de voz não está disponível neste navegador.',
+    'no-speech': 'Não ouvi nada. Tente de novo.',
+    'audio-capture': 'Não foi possível acessar o microfone.',
+    network: 'Erro de rede no reconhecimento de voz.',
+    aborted: 'O reconhecimento de voz foi interrompido.',
+    'language-not-supported':
+      'O reconhecimento de português não está disponível neste navegador.',
+  };
+
+  cb.aoErro?.(
+    erros[e.error] ?? `Falha no reconhecimento de voz (${e.error}).`
+  );
+};
     rec.onend = () => cb.aoFim?.();
 
     this.reconhecimento = rec;
