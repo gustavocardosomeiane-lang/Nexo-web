@@ -287,15 +287,13 @@ export function Orbe({
       canvas.height = Math.round(altura * dpr);
       canvas.style.width = `${largura}px`;
       canvas.style.height = `${altura}px`;
-      // Atribuir a canvas.width LIMPA o canvas. No modo com movimento o próximo
-      // quadro repinta sozinho; no modo reduzido não há próximo quadro, então
-      // o resize deixaria a orbe apagada. Repintar aqui fecha esse buraco.
-      if (reduzirMovimento) desenhar(performance.now());
+      // Atribuir a canvas.width LIMPA o canvas, mas o laço de animação roda
+      // sempre (ver `desenhar`) — o próximo quadro, a no máximo ~16ms, repinta
+      // sozinho. Não há mais um "modo estático" que dependa de repintar aqui.
     };
 
-    // `dimensionar` chama `desenhar`, que só é declarada abaixo. Como o
-    // ResizeObserver só dispara no próximo tick, `desenhar` já existe quando
-    // isso acontecer — mas a primeira chamada manual precisa vir DEPOIS.
+    // `dimensionar` só mexe em canvas/DOM; `desenhar` é declarada abaixo e
+    // reagendada por si mesma — não há dependência de ordem entre as duas.
     const ro = new ResizeObserver(dimensionar);
     ro.observe(hospedeiro);
 
@@ -332,7 +330,13 @@ export function Orbe({
       const perfil = PERFIL[estadoRef.current] ?? PERFIL.idle;
       const nv = nivelRef.current;
 
-      tempo += dt * perfil.ritmo;
+      // `prefers-reduced-motion` não congela a orbe: WCAG pede para cortar
+      // movimento GRANDE (parallax, zoom, giro), não para parar tudo. Um
+      // amortecedor forte (12%) deixa a deriva quase imóvel e o pulso muito
+      // discreto — perceptível como "viva", sem o tipo de movimento que
+      // incomoda quem ativou a preferência.
+      const amortecedor = reduzirMovimento ? 0.12 : 1;
+      tempo += dt * perfil.ritmo * amortecedor;
 
       const cx = largura / 2;
       const cy = altura / 2;
@@ -344,7 +348,7 @@ export function Orbe({
       ctx.clearRect(0, 0, largura, altura);
 
       // Pulso lento e a voz somando um pouco de energia.
-      const pulso = 1 + Math.sin(tempo * 0.7) * perfil.pulso + nv * 0.18;
+      const pulso = 1 + Math.sin(tempo * 0.7) * perfil.pulso * amortecedor + nv * 0.18 * amortecedor;
       const luz = perfil.luz * pulso;
 
       // ADITIVO: é isto que faz o cruzamento das linhas virar brilho, e o
@@ -449,16 +453,15 @@ export function Orbe({
       }
 
       ctx.globalCompositeOperation = 'source-over';
-      // Só encadeia o próximo quadro quando há movimento. No modo reduzido cada
-      // chamada de `desenhar` é um retrato único, sem laço — nunca reagenda,
-      // nem quando vem de um resize.
-      if (!reduzirMovimento) quadro = requestAnimationFrame(desenhar);
+      // O laço nunca para sozinho — só a limpeza do efeito (unmount, troca de
+      // `tamanho`/`reduzirMovimento`) cancela via `cancelAnimationFrame`. Isso
+      // vale também sob `prefers-reduced-motion`: a diferença é o amortecedor
+      // acima, não a existência do próximo quadro.
+      quadro = requestAnimationFrame(desenhar);
     }
 
-    // Primeiro quadro. Precisa vir DEPOIS de `desenhar` existir; por isso a
-    // chamada manual de dimensionar fica aqui, e não junto do ro.observe.
     dimensionar();
-    if (!reduzirMovimento) quadro = requestAnimationFrame(desenhar);
+    quadro = requestAnimationFrame(desenhar);
 
     return () => {
       cancelAnimationFrame(quadro);

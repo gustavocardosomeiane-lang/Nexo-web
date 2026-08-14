@@ -217,6 +217,7 @@
   .nexo-ai-bolha, .nexo-ai-btn.escutando {
     animation: none !important;
   }
-  /* O Canvas já desenha um quadro único e para — ver Orbe.tsx. */
+  /* O Canvas continua animando, só que bem mais devagar — ver o amortecedor
+     em Orbe.tsx. Aqui só desliga a transição do halo, que é CSS puro. */
   .orbe::before { transition: none; }
 }

@@ -42,10 +42,23 @@ export interface UsuarioAutenticado {
   db: SupabaseClient;
 }
 
-/** URL pública do projeto. A anon key também é pública por natureza. */
+/**
+ * URL pública do projeto. A anon key também é pública por natureza.
+ *
+ * POR QUE O FALLBACK PARA `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` — a
+ * Vercel injeta TODAS as variáveis do projeto em `process.env` das funções
+ * serverless, sem filtrar por prefixo; o prefixo `VITE_` só controla o que o
+ * Vite inline no bundle do FRONTEND. Em produção, o projeto tinha
+ * `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY` cadastradas (o login usa
+ * exatamente essas) mas não as versões sem prefixo — então toda chamada à
+ * NEXO AI caía aqui, `ambiente()` lançava `NaoAutenticado`, e a interface
+ * mostrava "Sua sessão expirou" mesmo com o usuário autenticado. O fallback
+ * elimina essa classe de erro sem duplicar configuração nem tocar em como a
+ * sessão é validada.
+ */
 function ambiente(): { url: string; anonKey: string } {
-  const url = (process.env.SUPABASE_URL ?? '').trim();
-  const anonKey = (process.env.SUPABASE_ANON_KEY ?? '').trim();
+  const url = (process.env.SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? '').trim();
+  const anonKey = (process.env.SUPABASE_ANON_KEY ?? process.env.VITE_SUPABASE_ANON_KEY ?? '').trim();
   if (!url || !anonKey) {
     throw new NaoAutenticado(
       'Servidor sem SUPABASE_URL / SUPABASE_ANON_KEY para validar a sessão.',
