@@ -17,6 +17,7 @@
 
 import type {
   Campaign,
+  CampaignSlot,
   CampaignTarget,
   Client,
   Conversation,
@@ -714,6 +715,9 @@ export const campanhasMock: Campaign[] = [
     concluida_em: null,
   },
 ];
+
+/** Vazio de propósito: nenhum slot montado ainda. */
+export const slotsCampanhaMock: CampaignSlot[] = [];
 
 /** Vazio de propósito: nenhum disparo foi feito ainda. */
 export const alvosCampanhaMock: CampaignTarget[] = [];

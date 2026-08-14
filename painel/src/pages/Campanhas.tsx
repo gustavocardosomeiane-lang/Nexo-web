@@ -14,6 +14,7 @@
  */
 
 import { useCallback, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { db } from '@/data';
 import { useAsync } from '@/hooks/useAsync';
 import { useAuth } from '@/auth/AuthContext';
@@ -34,7 +35,7 @@ import {
   type ItemLote,
   type Lote,
   type MotivoInelegivel,
-} from '@/integrations/ninjabot/campanhas';
+} from '@/prospeccao/campanhas';
 import { Confirmacao, Modal } from '@/components/ui/Modal';
 import {
   Aviso,
@@ -119,11 +120,12 @@ export function Campanhas() {
         )}
       </header>
 
+      {/* Texto fixo voltou a ser a verdade: não existe integração que possa
+          mudar este estado. O painel organiza; o envio é sempre seu. */}
       <Aviso tom="info" className="secao-aviso">
-        <strong>Modo assistido.</strong> O NinjaBot em uso não expõe API pública, então nenhuma
-        mensagem sai daqui sozinha — e nenhum endpoint foi inventado para fingir que sai. O painel
-        monta o lote com a mensagem pronta, você envia, e confirma. Assim o controle de duplicidade
-        e o funil ficam corretos.
+        <strong>Modo assistido.</strong> Nenhuma mensagem sai daqui sozinha. O painel monta o lote
+        com a mensagem pronta, você envia pelo WhatsApp e confirma — é assim que o controle de
+        duplicidade e o funil ficam corretos.
       </Aviso>
 
       {campanhas.carregando ? (
@@ -270,9 +272,17 @@ function CartaoCampanha({
           </>
         )}
 
-        <Botao variante="secundario" bloco icone="enviar" onClick={aoAbrir} style={{ marginTop: 14 }}>
-          Abrir campanha
-        </Botao>
+        <div className="linha" style={{ gap: 8, marginTop: 14 }}>
+          <Botao variante="secundario" icone="enviar" onClick={aoAbrir} style={{ flex: 1 }}>
+            Abrir campanha
+          </Botao>
+          {/* Fluxo de seleção manual: escolher contato a contato e montar
+              slots com mensagens diferentes. */}
+          <Link to={`/campanhas/${campanha.id}`} className="btn btn-primario" style={{ flex: 1 }}>
+            <Icon nome="colunas" />
+            Disparo manual
+          </Link>
+        </div>
       </div>
     </Card>
   );
@@ -352,8 +362,20 @@ function PainelCampanha({
   const confirmar = useCallback(
     async (item: ItemLote) => {
       try {
-        await confirmarEnvio(campanha, item);
+        const r = await confirmarEnvio(campanha, item);
         setEnviados((atual) => new Set(atual).add(item.alvo.id));
+
+        // Silenciar a falha de autorização foi o bug: o registro dava certo,
+        // a IA nunca era liberada, e a tela dizia que estava tudo bem.
+        if (r.bloqueado) {
+          toast.erro(`${item.lead.nome} está marcado como “não contatar”. Nada foi registrado.`);
+        } else if (!r.autorizada) {
+          toast.erro(
+            `Envio registrado, mas a IA NÃO foi autorizada para ${item.lead.nome}` +
+              (r.erroAutorizacao ? `: ${r.erroAutorizacao}` : '.') +
+              ' O NinjaBot não vai assumir essa conversa.',
+          );
+        }
       } catch (e) {
         toast.erro(e instanceof Error ? e.message : 'Não foi possível registrar o envio.');
       }
@@ -454,7 +476,16 @@ function PainelCampanha({
 
               {(resumo.ignorados > 0 || resumo.falhas > 0) && (
                 <Aviso tom="alerta">
-                  {resumo.ignorados > 0 && <>{resumo.ignorados} lead(s) saíram do público na revalidação. </>}
+                  {/* Conta alvos com status `ignorado` — ou seja, marcados como
+                      “não contatar”. O texto antigo dizia “saíram do público na
+                      revalidação”, que descrevia outra coisa e mandava procurar
+                      o problema no lugar errado. */}
+                  {resumo.ignorados > 0 && (
+                    <>
+                      {resumo.ignorados} lead(s) marcado(s) como “não contatar” — não serão
+                      abordados.{' '}
+                    </>
+                  )}
                   {resumo.falhas > 0 && <>{resumo.falhas} pulado(s) pelo operador.</>}
                 </Aviso>
               )}
@@ -465,12 +496,22 @@ function PainelCampanha({
                 </Botao>
               )}
 
-              {resumo.pendentes === 0 && (
-                <Aviso tom="ok">
-                  Todos os leads desta campanha já foram tratados. Taxa de resposta:{' '}
-                  <strong>{resumo.taxa_resposta.toFixed(0)}%</strong>.
-                </Aviso>
-              )}
+              {/* “Tratados” só é verdade se alguém foi realmente contatado.
+                  Com total > 0 e nenhum enviado, a campanha está PARADA, não
+                  concluída — e dizer o contrário em verde escondia o problema. */}
+              {resumo.pendentes === 0 &&
+                (resumo.enviados + resumo.respondidos > 0 ? (
+                  <Aviso tom="ok">
+                    Todos os leads desta campanha já foram tratados. Taxa de resposta:{' '}
+                    <strong>{resumo.taxa_resposta.toFixed(0)}%</strong>.
+                  </Aviso>
+                ) : resumo.total > 0 ? (
+                  <Aviso tom="alerta">
+                    Esta campanha tem <strong>{resumo.total} lead(s)</strong> e{' '}
+                    <strong>nenhum pendente</strong>, mas nada foi enviado. Eles estão marcados como
+                    “não contatar” ou foram pulados — confira a lista antes de concluir.
+                  </Aviso>
+                ) : null)}
             </>
           )}
         </div>

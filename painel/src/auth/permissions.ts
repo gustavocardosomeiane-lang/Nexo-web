@@ -16,6 +16,7 @@ import type { UserRole } from '@/types';
 
 export type Modulo =
   | 'dashboard'
+  | 'nexo_ai'
   | 'leads'
   | 'clientes'
   | 'vendas'
@@ -41,6 +42,7 @@ export const PERMISSOES: Matriz = {
   /** Dono da operacao: acesso total, inclusive integracoes e exclusoes. */
   administrador: {
     dashboard: TUDO,
+    nexo_ai: SO_LEITURA,
     leads: TUDO,
     clientes: TUDO,
     vendas: TUDO,
@@ -58,6 +60,7 @@ export const PERMISSOES: Matriz = {
   /** Vende: dono do funil. Ve o que vendeu, nao mexe no caixa. */
   vendedor: {
     dashboard: SO_LEITURA,
+    nexo_ai: SO_LEITURA,
     leads: TUDO,
     clientes: SEM_EXCLUIR,
     vendas: SEM_EXCLUIR,
@@ -72,6 +75,7 @@ export const PERMISSOES: Matriz = {
   /** Cuida do dinheiro: pagamentos, parcelas e catalogo de precos. */
   financeiro: {
     dashboard: SO_LEITURA,
+    nexo_ai: SO_LEITURA,
     leads: SO_LEITURA,
     clientes: SO_LEITURA,
     vendas: SEM_EXCLUIR,
@@ -86,6 +90,7 @@ export const PERMISSOES: Matriz = {
   /** Executa os projetos. Nao ve faturamento nem valores de venda. */
   colaborador: {
     dashboard: SO_LEITURA,
+    nexo_ai: SO_LEITURA,
     clientes: SO_LEITURA,
     projetos: SEM_EXCLUIR,
     conversas: SO_LEITURA,

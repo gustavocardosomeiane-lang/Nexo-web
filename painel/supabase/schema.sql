@@ -833,3 +833,114 @@ insert into public.tags (nome, descricao) values
   ('Prestadores de serviço', 'Profissionais liberais'),
   ('Sem site', 'Negócios sem presença digital')
 on conflict (nome) do nothing;
+
+-- =============================================================================
+-- 9. SLOTS DE DISPARO E AUTORIZAÇÃO DA IA
+--
+-- Acrescentado com a integração real do NinjaBot. Aditivo: roda sobre um banco
+-- que já tenha as seções 1–8 sem apagar nada.
+-- =============================================================================
+
+do $$
+begin
+  if not exists (select 1 from pg_type where typname = 'slot_status') then
+    create type slot_status as enum ('rascunho', 'pronto', 'disparado', 'cancelado');
+  end if;
+end $$;
+
+-- campaign_slots ----------------------------------------------------------------
+-- Cada slot é um lote com SUA mensagem e SEUS contatos. É a unidade que você
+-- revisa antes de disparar e a que fica registrada depois.
+create table if not exists public.campaign_slots (
+  id            uuid        primary key default gen_random_uuid(),
+  campanha_id   uuid        not null references public.campaigns(id) on delete cascade,
+  nome          text        not null check (length(trim(nome)) > 0),
+  mensagem      text        not null check (length(trim(mensagem)) > 0),
+  status        slot_status not null default 'rascunho',
+  ordem         smallint    not null default 1 check (ordem > 0),
+  disparado_em  timestamptz,
+  criado_em     timestamptz not null default now(),
+  atualizado_em timestamptz not null default now()
+);
+
+create index if not exists idx_slots_campanha on public.campaign_slots (campanha_id, ordem);
+
+-- Campos de participação e autorização em campaign_targets.
+-- ADD COLUMN IF NOT EXISTS: não recria a tabela nem perde dado existente.
+alter table public.campaign_targets
+  add column if not exists slot_id uuid references public.campaign_slots(id) on delete set null;
+alter table public.campaign_targets add column if not exists telefone text;
+alter table public.campaign_targets add column if not exists mensagem_final text;
+alter table public.campaign_targets add column if not exists ia_autorizada boolean not null default false;
+alter table public.campaign_targets add column if not exists ia_autorizada_em timestamptz;
+alter table public.campaign_targets add column if not exists ia_canal_id integer;
+alter table public.campaign_targets add column if not exists conversa_externa_id text;
+-- Id da mensagem devolvido pela API no disparo. Nulo quando a resposta do
+-- NinjaBot nao traz id (o swagger declara `result`/`conversa` sem tipagem).
+alter table public.campaign_targets add column if not exists mensagem_externa_id text;
+
+comment on column public.campaign_targets.ia_autorizada is
+  'A IA do NinjaBot está liberada para atender este contato. Só vira true quando o operador confirma o disparo — quem nunca participou nunca é autorizado.';
+comment on column public.campaign_targets.telefone is
+  'Telefone congelado no momento do disparo. Se o cadastro do lead mudar depois, o registro de quem recebeu o quê continua fiel ao que aconteceu.';
+
+create index if not exists idx_targets_slot on public.campaign_targets (slot_id);
+-- Consulta central: "este número participou e está autorizado?"
+create index if not exists idx_targets_telefone on public.campaign_targets (telefone)
+  where telefone is not null;
+create index if not exists idx_targets_autorizados on public.campaign_targets (ia_autorizada)
+  where ia_autorizada;
+
+-- Trigger de atualizado_em
+drop trigger if exists trg_campaign_slots_atualizado_em on public.campaign_slots;
+create trigger trg_campaign_slots_atualizado_em before update on public.campaign_slots
+  for each row execute function public.tocar_atualizado_em();
+
+-- RLS ---------------------------------------------------------------------------
+alter table public.campaign_slots enable row level security;
+
+drop policy if exists slots_ler on public.campaign_slots;
+create policy slots_ler on public.campaign_slots
+  for select using (public.tem_papel(array['administrador', 'vendedor']::user_role[]));
+
+drop policy if exists slots_escrever on public.campaign_slots;
+create policy slots_escrever on public.campaign_slots
+  for all using (public.tem_papel(array['administrador', 'vendedor']::user_role[]))
+  with check (public.tem_papel(array['administrador', 'vendedor']::user_role[]));
+
+-- =============================================================================
+-- 10. CORREÇÃO: "permission denied for table conversations"
+--
+-- O erro aparece quando RLS está ligado e NENHUMA policy casa para o usuário —
+-- o Postgres nega por padrão, que é o comportamento correto e desejado.
+--
+-- As policies abaixo são idempotentes e restauram o acesso da equipe SEM
+-- desligar RLS. Desligar RLS resolveria o sintoma e abriria a tabela inteira
+-- para a anon key, que é pública: qualquer visitante leria as conversas.
+-- =============================================================================
+
+alter table public.conversations enable row level security;
+
+drop policy if exists conversations_ler on public.conversations;
+create policy conversations_ler on public.conversations
+  for select using (public.eh_equipe());
+
+drop policy if exists conversations_escrever on public.conversations;
+create policy conversations_escrever on public.conversations
+  for all using (public.tem_papel(array['administrador', 'vendedor']::user_role[]))
+  with check (public.tem_papel(array['administrador', 'vendedor']::user_role[]));
+
+-- DIAGNÓSTICO. Se o erro persistir depois disso, quase sempre é uma destas
+-- duas causas — e as duas são de configuração, não de policy:
+--
+--   1. O usuário logado não tem linha em public.users, então papel_atual()
+--      devolve NULL e eh_equipe() é false. Confira com:
+--        select id, email, role, ativo from public.users where email = 'SEU@EMAIL';
+--
+--   2. A role `authenticated` perdeu o GRANT de tabela. RLS filtra LINHAS;
+--      GRANT libera a TABELA. Sem o GRANT, nem a melhor policy salva:
+grant usage on schema public to authenticated, anon;
+grant select, insert, update, delete on all tables in schema public to authenticated;
+grant select on all tables in schema public to anon;
+alter default privileges in schema public
+  grant select, insert, update, delete on tables to authenticated;

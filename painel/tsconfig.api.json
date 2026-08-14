@@ -2,8 +2,14 @@
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2022"],
-    "module": "ESNext",
-    "moduleResolution": "bundler",
+    // NodeNext, e nao "bundler": as funcoes em api/ nao passam por bundler
+    // nenhum. A Vercel compila cada .ts para .js e o Node carrega como ESM
+    // (package.json tem "type": "module"), onde import relativo EXIGE a
+    // extensao. Com "bundler" o tsc aceitava `from '../_lib/ninjabot'`, o
+    // typecheck passava verde e a funcao morria em producao com
+    // ERR_MODULE_NOT_FOUND. Agora o tsc recusa antes do deploy.
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "types": ["node"],
     "strict": true,
     "noUnusedLocals": true,

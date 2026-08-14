@@ -23,8 +23,7 @@ import { Drawer } from '@/components/ui/Modal';
 import { Aviso, Botao, CampoTexto, CampoTextarea, Eyebrow } from '@/components/ui/primitives';
 import { Icon } from '@/components/ui/Icon';
 import { CONVERSA, StatusConversa, StatusLead, opcoesDe } from '@/components/dominio/StatusBadge';
-import { ninjaBotConfigurado } from '@/integrations/ninjabot';
-import { registrarResposta } from '@/integrations/ninjabot/campanhas';
+import { registrarResposta } from '@/prospeccao/campanhas';
 import { useAuth } from '@/auth/AuthContext';
 import { useToast } from '@/components/ui/Toast';
 
@@ -131,19 +130,12 @@ export function Conversas() {
         </div>
       </header>
 
-      <Aviso tom={ninjaBotConfigurado ? 'ok' : 'info'} className="secao-aviso">
-        {ninjaBotConfigurado ? (
-          <>
-            <strong>NinjaBot conectado.</strong> As conversas são sincronizadas pela integração.
-          </>
-        ) : (
-          <>
-            <strong>NinjaBot ainda não integrado.</strong> A API não foi fornecida, então nada é
-            sincronizado automaticamente — a arquitetura já está pronta para recebê-la (interface{' '}
-            <code className="mono">NinjaBotProvider</code>). O que aparece abaixo vem da tabela{' '}
-            <code className="mono">conversations</code> do próprio painel.
-          </>
-        )}
+      {/* A integração com o NinjaBot foi removida do projeto. Esta tela lê a
+          tabela `conversations` do próprio painel — nada vem de fora. */}
+      <Aviso tom="info" className="secao-aviso">
+        <strong>Sem integração de mensageria.</strong> As conversas abaixo vêm da tabela{' '}
+        <code className="mono">conversations</code> do painel, alimentada pelo registro dos
+        disparos. Nada é sincronizado automaticamente.
       </Aviso>
 
       <div className="filtros">

@@ -25,7 +25,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { User, UserRole } from '@/types';
-import { DATA_MODE } from '@/lib/env';
+import { DATA_MODE, urlDoPainel } from '@/lib/env';
 import { getSupabase } from '@/data/supabase/client';
 import { usuariosMock } from '@/data/mock/seed';
 import { pode, podeVer, type Acao, type Modulo } from './permissions';
@@ -75,6 +75,77 @@ function limparSessaoMock(): void {
   } catch {
     /* nada a fazer */
   }
+}
+
+/* --------------------------------------------------------------------------
+   Tradução dos erros de login
+   -------------------------------------------------------------------------- */
+
+/** O que o supabase-js entrega num erro de autenticação. */
+interface ErroSupabase {
+  message?: string;
+  code?: string;
+  status?: number;
+}
+
+/**
+ * Traduz o erro do Supabase para algo acionável.
+ *
+ * POR QUE NÃO COMPARAR `error.message` COM UM TEXTO FIXO — a versão anterior
+ * fazia `error.message === 'Invalid login credentials'` e mandava TODO o resto
+ * para "Não foi possível entrar. Tente novamente.". Isso escondeu por dias um
+ * erro de configuração: com `VITE_SUPABASE_URL` apontando para `/rest/v1`, a
+ * chamada de login batia no PostgREST e voltava
+ * "Invalid path specified in request URL" — que a interface exibia como se
+ * fosse problema de senha. Mensagem genérica demais não é discrição, é ruído.
+ *
+ * A ordem é intencional: erro de CONFIGURAÇÃO primeiro, porque ele não é culpa
+ * de quem está tentando entrar e precisa aparecer inteiro.
+ */
+export function traduzirErroLogin(erro: ErroSupabase): string {
+  const codigo = (erro.code ?? '').toLowerCase();
+  const mensagem = (erro.message ?? '').toLowerCase();
+  const status = erro.status ?? 0;
+
+  /* ---- Configuração errada ---- */
+  // PGRST* = a requisição chegou no PostgREST em vez do serviço de auth.
+  if (codigo.startsWith('pgrst') || mensagem.includes('invalid path specified')) {
+    return (
+      'Configuração inválida: VITE_SUPABASE_URL precisa ser a raiz do projeto ' +
+      '(https://SEU-PROJETO.supabase.co), sem /rest/v1 no fim.'
+    );
+  }
+  if (status === 404) {
+    return 'O endereço do Supabase está incorreto. Confira VITE_SUPABASE_URL.';
+  }
+  if (mensagem.includes('failed to fetch') || mensagem.includes('networkerror')) {
+    return 'Não foi possível alcançar o Supabase. Verifique a conexão e a CSP do painel.';
+  }
+  if (status === 401 && !codigo) {
+    return 'A chave pública do Supabase foi recusada. Confira VITE_SUPABASE_ANON_KEY.';
+  }
+
+  /* ---- Credencial ----
+     Genérico de propósito: distinguir "e-mail não existe" de "senha errada"
+     entregaria a um atacante quais contas são válidas. */
+  if (codigo === 'invalid_credentials' || mensagem.includes('invalid login credentials')) {
+    return 'E-mail ou senha incorretos.';
+  }
+  if (codigo === 'email_not_confirmed' || mensagem.includes('email not confirmed')) {
+    return 'Confirme seu e-mail antes de entrar. Procure a mensagem de confirmação do Supabase.';
+  }
+  if (codigo === 'user_banned') return 'Este acesso está suspenso. Fale com um administrador.';
+
+  /* ---- Limite de tentativas ---- */
+  if (status === 429 || codigo.includes('rate_limit')) {
+    return 'Muitas tentativas seguidas. Aguarde um minuto e tente de novo.';
+  }
+
+  /* ---- Resto ----
+     Inclui o detalhe do Supabase: sem ele, o próximo problema volta a ser
+     invisível. */
+  const detalhe = erro.message ? ` (${erro.message})` : '';
+  return `Não foi possível entrar. Tente novamente.${detalhe}`;
 }
 
 /* --------------------------------------------------------------------------
@@ -162,15 +233,7 @@ export function ProvedorAuth({ children }: { children: ReactNode }) {
       password: senha,
     });
 
-    if (error) {
-      // Mensagem generica de proposito: dizer "este e-mail nao existe" entrega
-      // a um atacante quais contas sao validas.
-      throw new Error(
-        error.message === 'Invalid login credentials'
-          ? 'E-mail ou senha incorretos.'
-          : 'Não foi possível entrar. Tente novamente.',
-      );
-    }
+    if (error) throw new Error(traduzirErroLogin(error));
     if (!data.user) throw new Error('Não foi possível entrar. Tente novamente.');
 
     setUsuario(await carregarPerfil(data.user.id, data.user.email ?? ''));
@@ -195,8 +258,11 @@ export function ProvedorAuth({ children }: { children: ReactNode }) {
         'A recuperação de senha depende do Supabase Auth, que ainda não está configurado.',
       );
     }
+    // Este endereço PRECISA estar na lista de Redirect URLs do Supabase
+    // (Authentication → URL Configuration). Não basta o Site URL: sem ele na
+    // lista, o clique no e-mail devolve {"error":"requested path is invalid"}.
     const { error } = await getSupabase().auth.resetPasswordForEmail(email.trim(), {
-      redirectTo: `${window.location.origin}/redefinir-senha`,
+      redirectTo: urlDoPainel('/redefinir-senha'),
     });
     if (error) throw new Error('Não foi possível enviar o e-mail de recuperação.');
   }, []);

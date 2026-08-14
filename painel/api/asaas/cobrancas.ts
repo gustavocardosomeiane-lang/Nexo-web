@@ -21,7 +21,7 @@ import {
   responderErro,
   type PagamentoAsaas,
   type PixQrCodeAsaas,
-} from '../_lib/asaas';
+} from '../_lib/asaas.js';
 
 interface Entrada {
   customer?: string;

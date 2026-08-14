@@ -16,9 +16,8 @@ import { limparDadosMock } from '@/data/mock/mockProvider';
 import { useAsync } from '@/hooks/useAsync';
 import { useAuth } from '@/auth/AuthContext';
 import { useToast } from '@/components/ui/Toast';
-import { DATA_MODE, ninjabotEnv, paymentEnv, supabaseEnv } from '@/lib/env';
+import { DATA_MODE, paymentEnv, supabaseEnv } from '@/lib/env';
 import { gatewayConfigurado, portaWebhook, processarEventoPagamento } from '@/integrations/payments';
-import { ninjaBotConfigurado } from '@/integrations/ninjabot';
 import type { Sale, Settings, User, WebhookEvent } from '@/types';
 import { formatarDataHora, formatarTelefone } from '@/lib/format';
 import {
@@ -415,22 +414,7 @@ function AbaIntegracoes() {
         nota="Nenhum gateway foi escolhido por você, e nenhum foi escolhido por mim. A interface PaymentProvider já define o encaixe: PIX, cartão, parcelamento, checkout, API e webhooks. Secret keys jamais entram no frontend."
       />
 
-      <CardIntegracao
-        icone="robo"
-        nome="NinjaBot"
-        conectado={ninjaBotConfigurado}
-        descricao={
-          ninjaBotConfigurado
-            ? `Adaptador "${ninjabotEnv.provider}" ativo.`
-            : 'API não fornecida. Nada é sincronizado automaticamente.'
-        }
-        variaveis={[
-          ['VITE_NINJABOT_PROVIDER', ninjabotEnv.provider],
-          ['VITE_NINJABOT_API_URL', ninjabotEnv.apiUrl || '(vazio)'],
-          ['NINJABOT_API_KEY', 'somente no servidor'],
-        ]}
-        nota="A interface NinjaBotProvider descreve apenas o que o painel precisa receber para montar a tela de Conversas. Nenhum endpoint foi inventado."
-      />
+
 
       <SecaoWebhooks />
     </div>

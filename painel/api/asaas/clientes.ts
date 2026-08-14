@@ -14,7 +14,7 @@ import {
   responderErro,
   soDigitos,
   type ClienteAsaas,
-} from '../_lib/asaas';
+} from '../_lib/asaas.js';
 
 interface Entrada {
   name?: string;

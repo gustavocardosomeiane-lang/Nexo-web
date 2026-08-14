@@ -36,3 +36,11 @@ $RECYCLE.BIN/
 # Logs
 *.log
 npm-debug.log*
+
+# Vinculo local com a Vercel: contem VERCEL_OIDC_TOKEN.
+.vercel
+
+# Nenhum arquivo de ambiente real entra no Git. O `.env.example` e a excecao:
+# ele so tem placeholders vazios e serve de documentacao das variaveis.
+.env*
+!.env.example

@@ -1,0 +1,222 @@
+/* =============================================================================
+   NEXO AI — estilo próprio, na identidade da NEXO WEB: PRETO + VERMELHO.
+
+   Sem roxo, sem azul. O orbe é o único elemento visual da aba. Toda regra vive
+   sob `.nexo-ai` para não afetar o resto do painel.
+
+   Animações em `transform`/`opacity`/`filter` leves — roda liso no celular.
+   `prefers-reduced-motion` acalma tudo no fim do arquivo (a turbulência
+   animada é desligada no componente, que não a renderiza nesse modo).
+   ============================================================================= */
+
+.nexo-ai {
+  /* Paleta local, derivada dos tokens da marca (tokens.css). */
+  --ne-vermelho: var(--red, #e10e21);
+  --ne-intenso: var(--red-hover, #ff2033);
+  --ne-profundo: var(--red-deep, #b00a19);
+  --ne-brasa: #ff5a69;
+  --ne-glow: rgba(225, 14, 33, 0.5);
+  --ne-tint: rgba(225, 14, 33, 0.12);
+  --ne-linha: rgba(225, 14, 33, 0.28);
+
+  display: grid;
+  grid-template-rows: 1fr auto;
+  gap: 16px;
+  min-height: calc(100dvh - 120px);
+}
+
+/* Palco: fundo preto com um respiro de brasa atrás do orbe, sem cobrir. */
+.nexo-ai-palco {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  padding: 40px 20px;
+  border-radius: var(--r-lg, 20px);
+  overflow: hidden;
+  background:
+    radial-gradient(90% 70% at 50% 42%, rgba(120, 8, 18, 0.22) 0%, transparent 60%),
+    var(--bg, #08080a);
+  border: 1px solid var(--line, #23262e);
+}
+
+/* Controles mínimos, flutuando no canto — sem título, sem texto de marca. */
+.nexo-ai-controles {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: flex;
+  gap: 8px;
+  z-index: 2;
+}
+
+/* ---------------------------------------------------------------------------
+   ORBE — emaranhado de filamentos
+
+   Quase tudo acontece no Canvas: os filamentos, a profundidade, o brilho do
+   núcleo e a animação. O CSS aqui só posiciona e dá o halo difuso que o
+   Canvas não entrega barato — nenhuma regra desenha forma.
+   --------------------------------------------------------------------------- */
+
+.orbe {
+  --nivel: 0; /* 0..1, reservado para a voz */
+  position: relative;
+  display: grid;
+  place-items: center;
+  isolation: isolate;
+  /* Em telas estreitas o inline width/height cede ao menor lado disponível.
+     O Canvas mede o container real, então acompanha sem distorcer. */
+  max-width: min(82vw, 60vh);
+  max-height: min(82vw, 60vh);
+}
+
+.orbe-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Halo: luz do próprio emaranhado vazando no fundo escuro. Fica ATRÁS e é
+   pura difusão — não tem borda, não é anel, não desenha contorno. */
+.orbe::before {
+  content: "";
+  position: absolute;
+  inset: 12%;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 50% 50%,
+    rgba(225, 14, 33, 0.18),
+    rgba(120, 10, 20, 0.07) 45%,
+    transparent 70%
+  );
+  filter: blur(22px);
+  z-index: 0;
+  pointer-events: none;
+  transition: opacity 900ms var(--ease, cubic-bezier(.4, 0, .2, 1));
+}
+
+.orbe-canvas { position: relative; z-index: 1; }
+
+/* Estados: só intensidade do halo. O resto o Canvas resolve. */
+.orbe-idle::before { opacity: 0.7; }
+.orbe-listening::before { opacity: 0.95; }
+.orbe-thinking::before { opacity: 1; }
+.orbe-responding::before { opacity: 1; }
+.orbe-speaking::before { opacity: 1; }
+.orbe-error::before { opacity: 0.4; filter: blur(26px) saturate(0.6); }
+/* ---------------------------------------------------------------------------
+   CONVERSA
+   --------------------------------------------------------------------------- */
+
+.nexo-ai-conversa {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  padding: 4px 2px;
+  width: 100%;
+  max-width: 720px;
+  max-height: 34vh;
+}
+
+.nexo-ai-bolha {
+  max-width: 80%;
+  padding: 11px 15px;
+  border-radius: 16px;
+  line-height: 1.55;
+  font-size: 0.9375rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  animation: bolha-entra 0.28s var(--ease-expo, cubic-bezier(0.16, 1, 0.3, 1));
+}
+.nexo-ai-bolha.de-user {
+  align-self: flex-end;
+  background: linear-gradient(135deg, var(--ne-profundo), var(--ne-vermelho));
+  color: #fff;
+  border-bottom-right-radius: 5px;
+}
+.nexo-ai-bolha.de-assistant {
+  align-self: flex-start;
+  background: var(--surface-2, #16181e);
+  color: var(--fg-muted, #a8abb4);
+  border: 1px solid var(--ne-linha);
+  border-bottom-left-radius: 5px;
+}
+.nexo-ai-bolha.parcial {
+  align-self: flex-end;
+  opacity: 0.6;
+  font-style: italic;
+  background: var(--ne-tint);
+  color: var(--ne-brasa);
+}
+@keyframes bolha-entra {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------------------------------------------------------------------------
+   COMPOSITOR
+   --------------------------------------------------------------------------- */
+
+.nexo-ai-compositor {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 16px;
+  background: var(--surface, #111318);
+  border: 1px solid var(--line, #23262e);
+}
+.nexo-ai-compositor textarea {
+  flex: 1;
+  resize: none;
+  border: none;
+  background: transparent;
+  color: var(--fg, #fff);
+  font: inherit;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+  max-height: 120px;
+  padding: 8px 6px;
+}
+.nexo-ai-compositor textarea:focus { outline: none; }
+.nexo-ai-compositor textarea::placeholder { color: var(--fg-dim, #8a8e99); }
+
+.nexo-ai-btn {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  border: 1px solid var(--ne-linha);
+  background: var(--ne-tint);
+  color: var(--ne-brasa);
+  cursor: pointer;
+  transition: transform 0.18s var(--ease, ease), background 0.18s var(--ease, ease), color 0.18s var(--ease, ease);
+}
+.nexo-ai-btn:hover:not(:disabled) { background: var(--ne-vermelho); color: #fff; transform: translateY(-1px); }
+.nexo-ai-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.nexo-ai-btn.enviar { background: linear-gradient(135deg, var(--ne-profundo), var(--ne-vermelho)); color: #fff; border-color: transparent; }
+.nexo-ai-btn.ativo { background: var(--ne-vermelho); color: #fff; box-shadow: 0 0 0 4px var(--ne-tint); }
+.nexo-ai-btn.escutando { animation: ne-pulsa 1.2s ease-in-out infinite; }
+
+/* ---------------------------------------------------------------------------
+   RESPONSIVO
+   --------------------------------------------------------------------------- */
+
+@media (max-width: 640px) {
+  .nexo-ai-palco { padding: 28px 14px; }
+  .nexo-ai-conversa { max-height: 30vh; }
+  .nexo-ai-bolha { max-width: 90%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nexo-ai-bolha, .nexo-ai-btn.escutando {
+    animation: none !important;
+  }
+  /* O Canvas já desenha um quadro único e para — ver Orbe.tsx. */
+  .orbe::before { transition: none; }
+}

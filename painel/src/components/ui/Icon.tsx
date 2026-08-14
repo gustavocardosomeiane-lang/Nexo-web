@@ -295,6 +295,25 @@ const CAMINHOS: Record<string, ReactNode> = {
       <path d="M2 13v3M22 13v3" />
     </>
   ),
+  microfone: (
+    <>
+      <rect x="9" y="2" width="6" height="12" rx="3" />
+      <path d="M5 10a7 7 0 0 0 14 0" />
+      <path d="M12 17v4M8 21h8" />
+    </>
+  ),
+  som: (
+    <>
+      <path d="M11 5 6 9H2v6h4l5 4z" />
+      <path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14" />
+    </>
+  ),
+  'som-off': (
+    <>
+      <path d="M11 5 6 9H2v6h4l5 4z" />
+      <path d="M22 9l-6 6M16 9l6 6" />
+    </>
+  ),
   alvo: (
     <>
       <circle cx="12" cy="12" r="9" />

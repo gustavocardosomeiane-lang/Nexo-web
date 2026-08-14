@@ -8,7 +8,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { ambienteAsaas, baseAsaas, chamarAsaas, metodoInvalido, ErroAsaas } from '../_lib/asaas';
+import { ambienteAsaas, baseAsaas, chamarAsaas, metodoInvalido, ErroAsaas } from '../_lib/asaas.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (metodoInvalido(req, res, ['GET'])) return;

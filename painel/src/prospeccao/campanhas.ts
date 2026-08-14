@@ -30,6 +30,23 @@ import { db } from '@/data';
 import type { Campaign, CampaignTarget, Lead } from '@/types';
 import { whatsappLink } from '@/lib/format';
 
+/**
+ * O que aconteceu ao confirmar o envio de um contato do lote.
+ *
+ * Existe porque registrar e AUTORIZAR A IA são coisas diferentes, e a segunda
+ * pode falhar sozinha. Antes esta função devolvia `void`: a autorização nem
+ * era tentada, e a tela não tinha como saber. Foi assim que um lead recebeu a
+ * mensagem, ficou registrado, e a IA nunca assumiu a conversa.
+ */
+export interface ResultadoConfirmacaoEnvio {
+  registrado: boolean;
+  autorizada: boolean;
+  /** Mensagem do erro quando a autorização falhou. `null` quando deu certo. */
+  erroAutorizacao: string | null;
+  /** `true` quando o contato foi barrado por “não contatar”. */
+  bloqueado: boolean;
+}
+
 // As regras puras vivem em shared/ para poderem ser testadas sem banco.
 // Reexportadas aqui para quem consome o motor nao precisar saber disso.
 import {
@@ -37,6 +54,7 @@ import {
   montarMensagem,
   resumirCampanha,
   temTag,
+  variaveisVazias,
   CARENCIA_DIAS,
   MOTIVO_TEXTO,
   TAMANHO_LOTE_PADRAO,
@@ -44,12 +62,13 @@ import {
   type Avaliacao,
   type MotivoInelegivel,
   type ResumoCampanha,
-} from '../../../shared/regras-campanha';
+} from '../../shared/regras-campanha';
 
 export {
   avaliarPublico,
   montarMensagem,
   resumirCampanha,
+  variaveisVazias,
   CARENCIA_DIAS,
   MOTIVO_TEXTO,
   TAMANHO_LOTE_PADRAO,
@@ -125,6 +144,16 @@ export async function gerarAlvos(campanha: Campaign): Promise<{ criados: number;
       enviado_em: null,
       respondido_em: null,
       observacao: null,
+      // Participação e autorização só são preenchidas quando VOCÊ confirma o
+      // envio. Entrar no público não autoriza a IA a nada.
+      slot_id: null,
+      telefone: null,
+      mensagem_final: null,
+      ia_autorizada: false,
+      ia_autorizada_em: null,
+      ia_canal_id: null,
+      conversa_externa_id: null,
+      mensagem_externa_id: null,
     });
     criados++;
   }
@@ -220,6 +249,19 @@ export async function proximoLote(campanha: Campaign): Promise<Lote> {
    -------------------------------------------------------------------------- */
 
 /**
+ * Telefone só com dígitos e prefixo 55.
+ *
+ * Vivia em `shared/regras-disparo.ts`, que saiu junto com a integração do
+ * NinjaBot. Aqui ele serve apenas para congelar o número no registro do
+ * disparo — não alimenta mais nenhuma API externa.
+ */
+function soDigitosCom55(valor: string): string {
+  const d = (valor ?? '').replace(/\D/g, '');
+  if (!d) return '';
+  return d.startsWith('55') ? d : `55${d}`;
+}
+
+/**
  * Registra que a primeira mensagem saiu.
  *
  * É o ponto em que o disparo vira fato no sistema:
@@ -232,10 +274,29 @@ export async function proximoLote(campanha: Campaign): Promise<Lote> {
 export async function confirmarEnvio(
   campanha: Campaign,
   item: ItemLote,
-): Promise<void> {
+): Promise<ResultadoConfirmacaoEnvio> {
   const agora = new Date().toISOString();
+  const telefone = soDigitosCom55(item.lead.whatsapp ?? item.lead.telefone ?? '');
 
-  await db.alvosCampanha.atualizar(item.alvo.id, { status: 'enviado', enviado_em: agora });
+  /* ---- 0. `nao_contatar` revalidado agora ----
+
+     O lead pode ter pedido para não ser contatado depois de entrar no lote.
+     Sem esta checagem, a trava absoluta valeria só até a montagem — e aqui ela
+     importa em dobro, porque este caminho AUTORIZA a IA. */
+  if (item.lead.nao_contatar) {
+    await db.alvosCampanha.atualizar(item.alvo.id, {
+      status: 'ignorado',
+      observacao: 'Marcado como “não contatar”',
+    });
+    return { registrado: false, autorizada: false, erroAutorizacao: null, bloqueado: true };
+  }
+
+  /* ---- 1. Registro do participante ---- */
+  await db.alvosCampanha.atualizar(item.alvo.id, {
+    status: 'enviado',
+    enviado_em: agora,
+    telefone,
+  });
 
   if (item.lead.status === 'novo') {
     await db.leads.atualizar(item.lead.id, {
@@ -258,7 +319,7 @@ export async function confirmarEnvio(
       ultima_mensagem_em: agora,
       mensagens_enviadas: daCampanha.mensagens_enviadas + 1,
     });
-    return;
+    return { registrado: true, autorizada: false, erroAutorizacao: null, bloqueado: false };
   }
 
   await db.conversas.criar({
@@ -277,7 +338,10 @@ export async function confirmarEnvio(
     valor_potencial: item.lead.valor_potencial,
     externo_id: null,
   });
+
+  return { registrado: true, autorizada: false, erroAutorizacao: null, bloqueado: false };
 }
+
 
 /** Marca o alvo como falho, sem consumir o lead — ele volta para pendente. */
 export async function marcarFalha(alvo: CampaignTarget, motivo: string): Promise<void> {

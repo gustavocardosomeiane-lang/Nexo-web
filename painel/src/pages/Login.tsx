@@ -18,6 +18,8 @@ import { usuariosMock } from '@/data/mock/seed';
 
 interface Local {
   de?: string;
+  /** Mensagem vinda de outra tela — hoje, a confirmação de senha redefinida. */
+  aviso?: string;
 }
 
 export function Login() {
@@ -32,7 +34,10 @@ export function Login() {
 
   const [erros, setErros] = useState<{ email?: string; senha?: string }>({});
   const [erroGeral, setErroGeral] = useState<string | null>(null);
-  const [aviso, setAviso] = useState<string | null>(null);
+  // Já nasce com a mensagem que a tela anterior mandou, se houver.
+  const [aviso, setAviso] = useState<string | null>(
+    () => (local.state as Local | null)?.aviso ?? null,
+  );
   const [enviando, setEnviando] = useState(false);
 
   if (carregando) {

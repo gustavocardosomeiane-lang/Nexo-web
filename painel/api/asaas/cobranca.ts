@@ -17,7 +17,7 @@ import {
   metodoInvalido,
   responderErro,
   type PagamentoAsaas,
-} from '../_lib/asaas';
+} from '../_lib/asaas.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (metodoInvalido(req, res, ['GET', 'POST', 'DELETE'])) return;

@@ -52,13 +52,42 @@ export const VARIAVEIS_DISPONIVEIS = ['{{nome}}', '{{primeiro_nome}}', '{{empres
  */
 export function montarMensagem(modelo: string, lead: Pick<LeadAvaliavel, 'nome' | 'empresa'>): string {
   const primeiroNome = lead.nome.trim().split(/\s+/)[0] ?? '';
-  return modelo
-    .replace(/\{\{\s*primeiro_nome\s*\}\}/gi, primeiroNome)
-    .replace(/\{\{\s*nome\s*\}\}/gi, lead.nome.trim())
-    .replace(/\{\{\s*empresa\s*\}\}/gi, lead.empresa?.trim() ?? '')
-    // Espaço duplo sobra quando uma variável fica vazia.
-    .replace(/[ \t]{2,}/g, ' ')
-    .trim();
+  return (
+    modelo
+      .replace(/\{\{\s*primeiro_nome\s*\}\}/gi, primeiroNome)
+      .replace(/\{\{\s*nome\s*\}\}/gi, lead.nome.trim())
+      .replace(/\{\{\s*empresa\s*\}\}/gi, lead.empresa?.trim() ?? '')
+      // Espaço duplo sobra quando uma variável fica vazia.
+      .replace(/[ \t]{2,}/g, ' ')
+      // Espaço antes de pontuação, pelo mesmo motivo: "sobre a ." -> "sobre a."
+      .replace(/[ \t]+([,.!?;:])/g, '$1')
+      .trim()
+  );
+}
+
+/**
+ * Variáveis que ficariam VAZIAS para este lead.
+ *
+ * Existe porque limpar espaço não conserta o texto: "sobre a {{empresa}}" com
+ * empresa vazia vira "sobre a.", que continua quebrado e não tem conserto
+ * automático — o artigo pendurado é do modelo, não da variável.
+ *
+ * A saída certa é avisar quem escreveu, antes de a mensagem chegar no lead.
+ */
+export function variaveisVazias(
+  modelo: string,
+  lead: Pick<LeadAvaliavel, 'nome' | 'empresa'>,
+): string[] {
+  const vazias: string[] = [];
+
+  if (/\{\{\s*empresa\s*\}\}/i.test(modelo) && !lead.empresa?.trim()) {
+    vazias.push('{{empresa}}');
+  }
+  if (/\{\{\s*(primeiro_)?nome\s*\}\}/i.test(modelo) && !lead.nome?.trim()) {
+    vazias.push('{{nome}}');
+  }
+
+  return vazias;
 }
 
 /* --------------------------------------------------------------------------

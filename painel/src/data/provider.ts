@@ -12,6 +12,7 @@
 
 import type {
   Campaign,
+  CampaignSlot,
   CampaignTarget,
   Client,
   Conversation,
@@ -84,6 +85,8 @@ export interface DatabaseProvider {
   /** Etiquetas/listas usadas para escolher o público das campanhas. */
   tags: Repository<Tag>;
   campanhas: Repository<Campaign>;
+  /** Slots/lotes de uma campanha: cada um com sua mensagem e seus contatos. */
+  slotsCampanha: Repository<CampaignSlot>;
   /** Livro-caixa do disparo: um lead por campanha, sem repetição. */
   alvosCampanha: Repository<CampaignTarget>;
 

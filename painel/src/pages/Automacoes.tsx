@@ -2,7 +2,7 @@
  * Automacoes — o funil desenhado, do disparo ao pos-venda.
  *
  * Cada etapa mostra o numero real do banco. Onde a etapa depende de uma
- * integracao que ainda nao existe (NinjaBot, gateway), isso e dito na propria
+ * integracao que ainda nao existe (gateway de pagamento), isso e dito na propria
  * etapa em vez de exibir um numero inventado.
  */
 
@@ -15,7 +15,6 @@ import { brl } from '@/lib/format';
 import { Aviso, Badge, Card, Eyebrow, Skeleton } from '@/components/ui/primitives';
 import { Icon, type NomeIcone } from '@/components/ui/Icon';
 import { gatewayConfigurado } from '@/integrations/payments';
-import { ninjaBotConfigurado } from '@/integrations/ninjabot';
 
 interface Etapa {
   chave: string;
@@ -85,12 +84,12 @@ export function Automacoes() {
     {
       chave: 'disparo',
       titulo: 'Disparo',
-      descricao: 'O NinjaBot envia a primeira mensagem para a lista da campanha.',
+      descricao: 'A primeira mensagem da campanha é enviada por você, pelo WhatsApp.',
       icone: 'enviar',
       numero: dado.disparos,
       unidade: 'conversas iniciadas',
-      ativa: ninjaBotConfigurado,
-      nota: ninjaBotConfigurado ? undefined : 'Depende da integração com o NinjaBot.',
+      ativa: false,
+      nota: 'Etapa manual — não há integração de mensageria no projeto.',
       link: '/conversas',
     },
     {
@@ -106,12 +105,12 @@ export function Automacoes() {
     {
       chave: 'ia',
       titulo: 'IA inicia a conversa',
-      descricao: 'A IA do NinjaBot conduz o atendimento e levanta a necessidade.',
+      descricao: 'O atendimento e o levantamento da necessidade são feitos por você.',
       icone: 'robo',
       numero: dado.emIA,
       unidade: 'em atendimento',
-      ativa: ninjaBotConfigurado,
-      nota: ninjaBotConfigurado ? undefined : 'Depende da integração com o NinjaBot.',
+      ativa: false,
+      nota: 'Etapa manual — não há integração de mensageria no projeto.',
     },
     {
       chave: 'qualificacao',
@@ -176,12 +175,12 @@ export function Automacoes() {
     {
       chave: 'posvenda',
       titulo: 'Pós-venda',
-      descricao: 'Entregue o site, o NinjaBot conduz o acompanhamento e a recompra.',
+      descricao: 'Entregue o site, o acompanhamento e a recompra são conduzidos por você.',
       icone: 'sucesso',
       numero: dado.entregues,
       unidade: 'entregues',
-      ativa: ninjaBotConfigurado,
-      nota: ninjaBotConfigurado ? undefined : 'Depende da integração com o NinjaBot.',
+      ativa: false,
+      nota: 'Etapa manual — não há integração de mensageria no projeto.',
     },
   ];
 
@@ -201,13 +200,13 @@ export function Automacoes() {
         </div>
       </header>
 
-      {(!ninjaBotConfigurado || !gatewayConfigurado) && (
+      {/* A integração de mensageria saiu do projeto; as etapas de conversa são
+          manuais por definição agora, não por falta de configuração. */}
+      {!gatewayConfigurado && (
         <Aviso tom="info" className="secao-aviso">
-          <strong>Fluxo parcialmente automatizado.</strong> Falta conectar{' '}
-          {!ninjaBotConfigurado && 'o NinjaBot'}
-          {!ninjaBotConfigurado && !gatewayConfigurado && ' e '}
-          {!gatewayConfigurado && 'o gateway de pagamento'}. As etapas dependentes seguem sendo
-          feitas à mão, e o painel registra tudo do mesmo jeito. Ver{' '}
+          <strong>Fluxo parcialmente automatizado.</strong> Falta conectar o gateway de pagamento.
+          As etapas de mensagem são manuais — não há integração de mensageria no projeto. O painel
+          registra tudo do mesmo jeito. Ver{' '}
           <Link to="/configuracoes" style={{ textDecoration: 'underline' }}>
             Configurações › Integrações
           </Link>

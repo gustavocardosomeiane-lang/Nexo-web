@@ -3,7 +3,7 @@
  *
  * Aqui mora o risco de reputação: disparar para quem não pediu, ou disparar
  * duas vezes para a mesma pessoa. Cada teste abaixo corresponde a uma trava
- * descrita em `src/integrations/ninjabot/campanhas.ts`.
+ * descrita em `src/prospeccao/campanhas.ts`.
  *
  * Testa as funções PURAS (avaliação de público e montagem de mensagem). O que
  * depende de banco é exercido no navegador — ver o relatório.
@@ -11,7 +11,12 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { avaliarPublico, montarMensagem, resumirCampanha } from '../shared/regras-campanha.ts';
+import {
+  avaliarPublico,
+  montarMensagem,
+  resumirCampanha,
+  variaveisVazias,
+} from '../shared/regras-campanha.ts';
 
 /* --------------------------------------------------------------------------
    Fábricas
@@ -196,4 +201,28 @@ test('ignorados e falhas são contados à parte', () => {
   assert.equal(r.ignorados, 1);
   assert.equal(r.falhas, 1);
   assert.equal(r.taxa_resposta, 0);
+});
+
+/* ==========================================================================
+   Variáveis vazias — o buraco na frase
+   ========================================================================== */
+
+test('remove espaço antes de pontuação quando a variável fica vazia', () => {
+  // Sem isso a mensagem sai "sobre a ." — visivelmente quebrada para o lead.
+  const texto = montarMensagem('Sobre a {{empresa}}.', lead({ empresa: null }));
+  assert.equal(texto, 'Sobre a.');
+});
+
+test('aponta a variável que ficaria vazia para este lead', () => {
+  assert.deepEqual(variaveisVazias('Oi {{primeiro_nome}}, da {{empresa}}', lead({ empresa: null })), [
+    '{{empresa}}',
+  ]);
+});
+
+test('não aponta nada quando o lead tem todos os dados', () => {
+  assert.deepEqual(variaveisVazias('Oi {{primeiro_nome}}, da {{empresa}}', lead()), []);
+});
+
+test('modelo sem a variável não gera aviso, mesmo com o campo vazio', () => {
+  assert.deepEqual(variaveisVazias('Mensagem fixa.', lead({ empresa: null })), []);
 });

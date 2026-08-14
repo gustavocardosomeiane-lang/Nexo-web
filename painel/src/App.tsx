@@ -16,11 +16,13 @@ import { ExigeModulo, Protegida } from '@/auth/RequireAuth';
 import { ProvedorToast } from '@/components/ui/Toast';
 import { Shell } from '@/components/layout/Shell';
 import { Login } from '@/pages/Login';
+import { RedefinirSenha } from '@/pages/RedefinirSenha';
 import { Dashboard } from '@/pages/Dashboard';
 import { bancoIndisponivel } from '@/data';
 import { Aviso } from '@/components/ui/primitives';
 import { MarcaNexo } from '@/components/ui/Icon';
 
+const NexoAI = lazy(() => import('@/pages/NexoAI').then((m) => ({ default: m.NexoAI })));
 const Leads = lazy(() => import('@/pages/Leads').then((m) => ({ default: m.Leads })));
 const Clientes = lazy(() => import('@/pages/Clientes').then((m) => ({ default: m.Clientes })));
 const ClienteDetalhe = lazy(() =>
@@ -34,6 +36,9 @@ const Financeiro = lazy(() => import('@/pages/Financeiro').then((m) => ({ defaul
 const Conversas = lazy(() => import('@/pages/Conversas').then((m) => ({ default: m.Conversas })));
 const Automacoes = lazy(() => import('@/pages/Automacoes').then((m) => ({ default: m.Automacoes })));
 const Campanhas = lazy(() => import('@/pages/Campanhas').then((m) => ({ default: m.Campanhas })));
+const CampanhaSlots = lazy(() =>
+  import('@/pages/CampanhaSlots').then((m) => ({ default: m.CampanhaSlots })),
+);
 const Notificacoes = lazy(() =>
   import('@/pages/Notificacoes').then((m) => ({ default: m.Notificacoes })),
 );
@@ -107,9 +112,22 @@ export function App() {
             <Routes>
               <Route path="/login" element={<Login />} />
 
+              {/* PÚBLICA de propósito. Quem chega pelo e-mail de recuperação
+                  ainda não sabe a senha; atrás de `Protegida`, o guard
+                  redirecionaria para /login e descartaria o `#access_token`
+                  da URL — que é exatamente o que autentica a pessoa.
+                  Carregada junto do bundle principal (sem `lazy`): o token
+                  vive no fragmento e precisa ser lido antes de qualquer
+                  navegação. */}
+              <Route path="/redefinir-senha" element={<RedefinirSenha />} />
+
               <Route element={<Protegida />}>
                 <Route element={<Shell />}>
                   <Route index element={<Dashboard />} />
+
+                  <Route element={<ExigeModulo modulo="nexo_ai" />}>
+                    <Route path="nexo-ai" element={<NexoAI />} />
+                  </Route>
 
                   <Route element={<ExigeModulo modulo="leads" />}>
                     <Route path="leads" element={<Leads />} />
@@ -147,6 +165,7 @@ export function App() {
                   <Route element={<ExigeModulo modulo="automacoes" />}>
                     <Route path="automacoes" element={<Automacoes />} />
                     <Route path="campanhas" element={<Campanhas />} />
+                    <Route path="campanhas/:id" element={<CampanhaSlots />} />
                   </Route>
 
                   <Route element={<ExigeModulo modulo="relatorios" />}>

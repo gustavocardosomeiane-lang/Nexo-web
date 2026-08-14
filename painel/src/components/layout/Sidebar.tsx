@@ -26,6 +26,7 @@ const GRUPOS: { titulo: string; itens: ItemNav[] }[] = [
     titulo: 'Operação',
     itens: [
       { para: '/', rotulo: 'Dashboard', icone: 'dashboard', modulo: 'dashboard' },
+      { para: '/nexo-ai', rotulo: 'NEXO AI', icone: 'robo', modulo: 'nexo_ai' },
       { para: '/leads', rotulo: 'Leads', icone: 'leads', modulo: 'leads' },
       { para: '/clientes', rotulo: 'Clientes', icone: 'clientes', modulo: 'clientes' },
       { para: '/conversas', rotulo: 'Conversas', icone: 'conversas', modulo: 'conversas' },

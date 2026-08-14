@@ -125,6 +125,35 @@ export interface Campaign {
   concluida_em: string | null;
 }
 
+/**
+ * SLOT / LOTE de disparo.
+ *
+ * Uma campanha se divide em slots. Cada slot tem a SUA mensagem e os SEUS
+ * contatos, escolhidos a dedo. É o que permite:
+ *   Slot 1 — 10 contatos, mensagem A
+ *   Slot 2 — 10 contatos, mensagem B
+ *
+ * O slot é a unidade que você revisa antes de disparar, e a unidade que fica
+ * registrada depois: é por ele que se sabe quem participou de qual envio.
+ */
+export const SLOT_STATUS = ['rascunho', 'pronto', 'disparado', 'cancelado'] as const;
+export type SlotStatus = (typeof SLOT_STATUS)[number];
+
+export interface CampaignSlot {
+  id: string;
+  campanha_id: string;
+  nome: string;
+  /** Mensagem deste slot. Aceita {{nome}}, {{primeiro_nome}} e {{empresa}}. */
+  mensagem: string;
+  status: SlotStatus;
+  /** Ordem de exibição e execução. */
+  ordem: number;
+  /** Quando você confirmou que disparou este slot. */
+  disparado_em: string | null;
+  criado_em: string;
+  atualizado_em: string;
+}
+
 /** Situação de um lead dentro de uma campanha. */
 export const TARGET_STATUS = ['pendente', 'enviado', 'respondido', 'ignorado', 'falhou'] as const;
 export type TargetStatus = (typeof TARGET_STATUS)[number];
@@ -147,6 +176,47 @@ export interface CampaignTarget {
   respondido_em: string | null;
   /** Motivo, quando `ignorado` ou `falhou`. */
   observacao: string | null;
+
+  /* ---- Participação no disparo ---- */
+
+  /** Slot ao qual este contato foi atribuído. `null` = ainda não distribuído. */
+  slot_id: string | null;
+  /**
+   * Telefone congelado no momento do disparo.
+   *
+   * Guardado aqui, e não lido do lead, de propósito: se o cadastro do lead
+   * mudar de número depois, o registro de quem recebeu o quê continua fiel ao
+   * que realmente aconteceu.
+   */
+  telefone: string | null;
+  /** Mensagem exata que foi preparada para este contato, já com variáveis. */
+  mensagem_final: string | null;
+
+  /* ---- Autorização da IA ---- */
+
+  /**
+   * `true` = a IA do NinjaBot está liberada para atender este contato.
+   *
+   * Só vira `true` quando VOCÊ confirma o envio. É o que garante que a IA
+   * responda apenas a quem participou do disparo — quem nunca passou por aqui
+   * nunca foi autorizado.
+   */
+  ia_autorizada: boolean;
+  ia_autorizada_em: string | null;
+  /** Canal do NinjaBot em que a autorização foi feita. */
+  ia_canal_id: number | null;
+  /** Conversa correspondente no NinjaBot, quando ela aparecer. */
+  conversa_externa_id: string | null;
+  /**
+   * Id da mensagem devolvido pela API no disparo.
+   *
+   * `null` é um valor legítimo e comum: o swagger do NinjaBot declara a
+   * resposta do envio com `result` e `conversa` SEM tipagem, então nem sempre
+   * dá para extrair um id. Preferimos `null` a inventar um — ver
+   * `extrairIdMensagem` em `shared/regras-disparo.ts`.
+   */
+  mensagem_externa_id: string | null;
+
   criado_em: string;
   atualizado_em: string;
 }

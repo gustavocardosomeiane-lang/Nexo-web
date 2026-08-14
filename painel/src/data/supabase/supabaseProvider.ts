@@ -14,6 +14,7 @@
 
 import type {
   Campaign,
+  CampaignSlot,
   CampaignTarget,
   Client,
   Conversation,
@@ -54,6 +55,7 @@ const TABELA = {
   eventosWebhook: 'webhook_events',
   tags: 'tags',
   campanhas: 'campaigns',
+  slotsCampanha: 'campaign_slots',
   alvosCampanha: 'campaign_targets',
 } as const;
 
@@ -230,6 +232,13 @@ const campanhas = criarRepositorio<Campaign>(TABELA.campanhas, {
   ordenarPorPadrao: 'criado_em',
 });
 
+const slotsCampanha = criarRepositorio<CampaignSlot>(TABELA.slotsCampanha, {
+  camposBusca: ['nome', 'mensagem'],
+  campoData: 'criado_em',
+  ordenarPorPadrao: 'ordem',
+  ordemPadrao: 'asc',
+});
+
 const alvosCampanha = criarRepositorio<CampaignTarget>(TABELA.alvosCampanha, {
   camposBusca: ['observacao'],
   campoData: 'criado_em',
@@ -343,6 +352,7 @@ export const supabaseProvider: DatabaseProvider = {
 
   tags,
   campanhas,
+  slotsCampanha,
   alvosCampanha,
 
   analytics,

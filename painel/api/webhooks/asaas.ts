@@ -17,8 +17,8 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { timingSafeEqual } from 'node:crypto';
-import { getSupabaseAdmin, supabaseConfigurado } from '../_lib/supabase';
-import { reaisParaCentavos } from '../_lib/asaas';
+import { getSupabaseAdmin, supabaseConfigurado } from '../_lib/supabase.js';
+import { reaisParaCentavos } from '../_lib/asaas.js';
 import {
   classificarEventoAsaas,
   efeitoNoPagamento,
@@ -27,7 +27,7 @@ import {
   statusDaVenda,
   type StatusPagamentoInterno,
   type StatusVendaInterno,
-} from '../../shared/regras-pagamento';
+} from '../../shared/regras-pagamento.js';
 
 /* --------------------------------------------------------------------------
    Segurança

@@ -1101,3 +1101,32 @@
   transition: opacity var(--t-fast), border-color var(--t-fast);
 }
 .lote-item.tratado { opacity: .55; border-color: rgba(34, 197, 94, .35); }
+
+/* Seleção manual de contatos para disparo */
+.contador-selecao {
+  padding: 10px 14px;
+  background: var(--red-tint);
+  border: 1px solid rgba(225, 14, 33, .3);
+  border-radius: var(--r-sm);
+  font-size: .8438rem;
+  color: var(--fg-muted);
+}
+.contador-selecao strong { color: var(--fg); font-size: 1rem; }
+
+.lista-selecao {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 46vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.lista-selecao > li {
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  background: var(--bg-alt);
+  transition: border-color var(--t-fast);
+}
+.lista-selecao > li:hover { border-color: var(--line); }
+.lista-selecao > li.bloqueado { opacity: .5; }

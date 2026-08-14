@@ -12,6 +12,7 @@
 
 import type {
   Campaign,
+  CampaignSlot,
   CampaignTarget,
   Client,
   Conversation,
@@ -40,6 +41,7 @@ import { uuid } from '@/lib/id';
 import {
   alvosCampanhaMock,
   campanhasMock,
+  slotsCampanhaMock,
   clientesMock,
   configuracoesMock,
   conversasMock,
@@ -254,6 +256,17 @@ const campanhas = criarRepositorio<Campaign & Record<string, unknown>>('campanha
   ordenarPorPadrao: 'criado_em',
 });
 
+const slotsCampanha = criarRepositorio<CampaignSlot & Record<string, unknown>>(
+  'slots-campanha',
+  slotsCampanhaMock as never,
+  {
+    camposBusca: ['nome', 'mensagem'],
+    campoData: 'criado_em',
+    ordenarPorPadrao: 'ordem',
+    ordemPadrao: 'asc',
+  },
+);
+
 const alvosCampanha = criarRepositorio<CampaignTarget & Record<string, unknown>>(
   'alvos-campanha',
   alvosCampanhaMock as never,
@@ -344,6 +357,7 @@ export const mockProvider: DatabaseProvider = {
 
   tags: tags as unknown as Repository<Tag>,
   campanhas: campanhas as unknown as Repository<Campaign>,
+  slotsCampanha: slotsCampanha as unknown as Repository<CampaignSlot>,
   alvosCampanha: alvosCampanha as unknown as Repository<CampaignTarget>,
 
   analytics,
