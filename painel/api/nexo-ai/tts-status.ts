@@ -74,16 +74,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
-  type AudioOutput = { data?: string; mime_type?: string };
-  const audioOutput = (dados as { output_audio?: AudioOutput }).output_audio;
+  type ContentItem = { type?: string; data?: string; mime_type?: string; sample_rate?: number; channels?: number };
+  type Step = { type?: string; content?: ContentItem[] };
+  const steps = (dados as { steps?: Step[] }).steps;
+  const audioContent = steps?.flatMap(s => s.content ?? []).find(c => c.type === 'audio' && c.data);
 
-  if (audioOutput?.data) {
+  if (audioContent?.data) {
     return res.status(200).json({
       ok: true,
       modelo: TTS_MODELO,
       voz: TTS_VOZ,
-      bytes_audio: Buffer.from(audioOutput.data, 'base64').length,
-      mime_type: audioOutput.mime_type ?? 'desconhecido',
+      bytes_audio: Buffer.from(audioContent.data, 'base64').length,
+      mime_type: audioContent.mime_type ?? 'desconhecido',
+      sample_rate: audioContent.sample_rate ?? 24000,
+      channels: audioContent.channels ?? 1,
     });
   }
 
@@ -91,7 +95,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ok: false,
     modelo: TTS_MODELO,
     voz: TTS_VOZ,
-    problema: 'API respondeu 200 mas sem output_audio.data.',
+    problema: 'API respondeu 200 mas sem audio em steps[].content[].',
     resposta_completa: dados,
   });
 }

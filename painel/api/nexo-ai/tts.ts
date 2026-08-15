@@ -116,15 +116,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .json({ ok: false, erro: msg });
   }
 
-  // Extrai o áudio da Interactions API: output_audio.data
-  type AudioOutput = { data?: string; mime_type?: string };
-  const audioOutput = (dados as { output_audio?: AudioOutput }).output_audio;
+  // Extrai o áudio da Interactions API: steps[N].content[N] onde type === 'audio'
+  type ContentItem = { type?: string; data?: string; mime_type?: string; sample_rate?: number; channels?: number };
+  type Step = { type?: string; content?: ContentItem[] };
+  const steps = (dados as { steps?: Step[] }).steps;
+  const audioContent = steps?.flatMap(s => s.content ?? []).find(c => c.type === 'audio' && c.data);
 
-  if (audioOutput?.data) {
-    const mime = (audioOutput.mime_type ?? '').toLowerCase();
-    const buf = Buffer.from(audioOutput.data, 'base64');
+  if (audioContent?.data) {
+    const mime = (audioContent.mime_type ?? '').toLowerCase();
+    const sampleRate = audioContent.sample_rate ?? 24000;
+    const channels = audioContent.channels ?? 1;
+    const buf = Buffer.from(audioContent.data, 'base64');
     const isPcm = mime.includes('l16') || mime.includes('pcm') || mime.includes('raw') || !mime.includes('wav');
-    const audioFinal = isPcm ? pcmParaWav(buf) : buf;
+    const audioFinal = isPcm ? pcmParaWav(buf, sampleRate, channels) : buf;
     const mimeType = isPcm ? 'audio/wav' : mime;
 
     res.setHeader('Content-Type', mimeType);
