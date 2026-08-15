@@ -75,7 +75,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!modelo.configurado) {
     return res.status(503).json({
       ok: false,
-      erro: 'NEXO AI ainda não configurada: falta NEXO_AI_API_KEY no servidor.',
+      erro: 'NEXO AI ainda não configurada: falta GEMINI_API_KEY ou NEXO_AI_API_KEY no servidor.',
       codigo: 'sem_credencial',
     });
   }

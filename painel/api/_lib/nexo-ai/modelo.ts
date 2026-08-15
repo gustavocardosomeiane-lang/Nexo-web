@@ -1,4 +1,3 @@
-```typescript
 /**
  * Camada de MODELO da NEXO AI
  *
@@ -603,11 +602,6 @@ export const geminiProvider: ModeloProvider =
         );
       }
 
-      console.log(
-        '[NEXO AI] Gemini respondeu com sucesso:',
-        GEMINI_MODELO
-      );
-
       return lerRespostaGemini(
         dados
       );
@@ -615,57 +609,53 @@ export const geminiProvider: ModeloProvider =
   };
 
 /* ==========================================================================
-   PROVIDER ATIVO
+   PROVIDER ATIVO — com fallback em tempo de execução
    ========================================================================== */
 
 /**
- * Gemini é SEMPRE prioridade quando GEMINI_API_KEY
- * está configurada.
+ * Gemini é prioridade quando GEMINI_API_KEY está configurada.
+ * Se Gemini falhar em runtime E Anthropic estiver configurado,
+ * a chamada é repetida no Anthropic (fallback transparente).
  *
- * Anthropic só será usado se Gemini não estiver
- * configurado.
+ * Se só um provider estiver configurado, retorna ele direto.
  */
 export function provedorAtivo(): ModeloProvider {
-  const geminiConfigurado =
-    geminiProvider.configurado;
+  const geminiOk = geminiProvider.configurado;
+  const anthropicOk = anthropicProvider.configurado;
 
-  const anthropicConfigurado =
-    anthropicProvider.configurado;
-
-  console.log(
-    '[NEXO AI] Provider Gemini:',
-    geminiConfigurado
-      ? 'CONFIGURADO'
-      : 'NÃO CONFIGURADO'
-  );
-
-  console.log(
-    '[NEXO AI] Provider Anthropic:',
-    anthropicConfigurado
-      ? 'CONFIGURADO'
-      : 'NÃO CONFIGURADO'
-  );
-
-  if (geminiConfigurado) {
-    console.log(
-      '[NEXO AI] PROVIDER ATIVO: GEMINI'
-    );
-
-    return geminiProvider;
+  if (geminiOk && anthropicOk) {
+    return provedorComFallback;
   }
 
-  if (anthropicConfigurado) {
-    console.log(
-      '[NEXO AI] PROVIDER ATIVO: ANTHROPIC'
-    );
+  if (geminiOk) return geminiProvider;
+  if (anthropicOk) return anthropicProvider;
 
-    return anthropicProvider;
-  }
-
-  throw new ErroModelo(
-    'Nenhum provedor de IA está configurado no servidor.',
-    500,
-    'nenhum_provedor'
-  );
+  return {
+    nome: 'nenhum',
+    get configurado() { return false; },
+    async conversar(): Promise<RespostaModelo> {
+      throw new ErroModelo(
+        'Nenhum provedor de IA está configurado no servidor.',
+        500,
+        'nenhum_provedor',
+      );
+    },
+  };
 }
-```
+
+const provedorComFallback: ModeloProvider = {
+  nome: 'gemini+anthropic',
+  get configurado() { return true; },
+
+  async conversar(pedido: PedidoModelo): Promise<RespostaModelo> {
+    try {
+      return await geminiProvider.conversar(pedido);
+    } catch (e) {
+      console.error(
+        '[NEXO AI] Gemini falhou, tentando Anthropic:',
+        e instanceof Error ? e.message : e,
+      );
+      return anthropicProvider.conversar(pedido);
+    }
+  },
+};

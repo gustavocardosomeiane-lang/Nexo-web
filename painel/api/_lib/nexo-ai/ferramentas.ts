@@ -20,7 +20,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { FerramentaModelo } from './modelo';
+import type { FerramentaModelo } from './modelo.js';
 import { redigirSegredos } from '../../../shared/regras-nexo-ai.js';
 
 export interface ContextoFerramenta {
