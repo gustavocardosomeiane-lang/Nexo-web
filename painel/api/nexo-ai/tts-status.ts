@@ -30,7 +30,7 @@ async function testarModelo(modelo: string, key: string): Promise<{
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: 'Olá' }] }],
+          contents: [{ role: 'user', parts: [{ text: 'Olá' }] }],
           generationConfig: {
             responseModalities: ['AUDIO'],
             speechConfig: {
