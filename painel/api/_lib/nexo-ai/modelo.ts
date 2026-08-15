@@ -322,7 +322,8 @@ function lerRespostaGemini(dados: Record<string, unknown>): RespostaModelo {
 export const geminiProvider: ModeloProvider = {
   nome: 'gemini',
   get configurado() {
-    return Boolean((process.env.GEMINI_API_KEY ?? '').trim());
+    const key = process.env.GEMINI_API_KEY;
+    return typeof key === 'string' && key.trim().length > 0;
   },
 
   async conversar(pedido: PedidoModelo): Promise<RespostaModelo> {
@@ -364,6 +365,9 @@ export const geminiProvider: ModeloProvider = {
 
 /** Provider ativo: Gemini quando configurado, Anthropic como fallback. */
 export function provedorAtivo(): ModeloProvider {
+  console.log('[NEXO AI] Gemini configurado:', Boolean(process.env.GEMINI_API_KEY));
+  console.log('[NEXO AI] Anthropic configurado:', Boolean(process.env.NEXO_AI_API_KEY));
+
   if (geminiProvider.configurado) return geminiProvider;
   return anthropicProvider;
 }
