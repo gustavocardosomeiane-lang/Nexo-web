@@ -83,9 +83,11 @@ export function useNexoAI(): UseNexoAI {
           setNivelVoz(0);
           setEstado('idle');
         },
-        aoErro: () => {
+        aoErro: (motivo) => {
           setNivelVoz(0);
-          setEstado('idle');
+          setErro(motivo);
+          setEstado('error');
+          setTimeout(() => setEstado((s) => (s === 'error' ? 'idle' : s)), 60);
         },
       });
     },
