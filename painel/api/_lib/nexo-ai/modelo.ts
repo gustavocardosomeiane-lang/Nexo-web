@@ -113,6 +113,35 @@ interface GeminiContent {
   parts: GeminiPart[];
 }
 
+/*
+ * Campos aceitos pelo Gemini em schemas de parâmetros de função.
+ * A API usa um subconjunto do OpenAPI 3.0 e rejeita tudo fora desta lista.
+ */
+const CAMPOS_SCHEMA_GEMINI = new Set([
+  'type', 'description', 'properties', 'required', 'enum', 'items', 'nullable',
+]);
+
+function normalizarSchemaGemini(
+  schema: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(schema)) {
+    if (!CAMPOS_SCHEMA_GEMINI.has(k)) continue;
+    if (k === 'properties' && v && typeof v === 'object') {
+      const props: Record<string, unknown> = {};
+      for (const [pk, pv] of Object.entries(v as Record<string, unknown>)) {
+        props[pk] = normalizarSchemaGemini(pv as Record<string, unknown>);
+      }
+      out[k] = props;
+    } else if (k === 'items' && v && typeof v === 'object') {
+      out[k] = normalizarSchemaGemini(v as Record<string, unknown>);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 function montarCorpoGemini(
   pedido: PedidoModelo
 ): Record<string, unknown> {
@@ -197,18 +226,21 @@ function montarCorpoGemini(
 
   /*
    * Ferramentas.
+   *
+   * A API do Gemini aceita um subconjunto do OpenAPI 3.0. Campos JSON Schema
+   * não reconhecidos (additionalProperties, $schema, $ref, allOf, etc.) fazem
+   * a requisição falhar com HTTP 400. O normalizador filtra antes de enviar.
    */
   if (pedido.ferramentas?.length) {
     corpo.tools = [
       {
-        functionDeclarations:
-          pedido.ferramentas.map(
-            (f) => ({
-              name: f.nome,
-              description: f.descricao,
-              parameters: f.parametros,
-            })
+        functionDeclarations: pedido.ferramentas.map((f) => ({
+          name: f.nome,
+          description: f.descricao,
+          parameters: normalizarSchemaGemini(
+            f.parametros as Record<string, unknown>,
           ),
+        })),
       },
     ];
   }
