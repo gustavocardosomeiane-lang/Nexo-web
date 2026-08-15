@@ -48,11 +48,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           input,
           response_format: { type: 'audio' },
           generation_config: {
-            speech_config: {
-              voice_config: {
-                prebuilt_voice_config: { voice_name: TTS_VOZ },
-              },
-            },
+            speech_config: [{ voice: TTS_VOZ }],
           },
         }),
       },
