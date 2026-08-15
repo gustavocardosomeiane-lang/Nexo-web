@@ -1,21 +1,21 @@
-﻿/**
- * AI TOOL LAYER ÔÇö o que a NEXO AI pode consultar.
+/**
+ * AI TOOL LAYER — o que a NEXO AI pode consultar.
  *
  * ===========================================================================
- * A IA N├âO FALA COM O BANCO. Ela pede a uma ferramenta, a ferramenta l├¬.
+ * A IA NÃO FALA COM O BANCO. Ela pede a uma ferramenta, a ferramenta lê.
  *
- * Toda leitura usa o cliente `db` do USU├üRIO autenticado (ver api/_lib/auth.ts),
- * ent├úo a RLS decide o que volta ÔÇö a IA n├úo enxerga nada al├®m do que a pessoa
- * j├í enxergaria na tela. E a matriz de permiss├Áes filtra ANTES: uma ferramenta
- * s├│ ├® oferecida ao modelo se o usu├írio pode ver aquele m├│dulo
+ * Toda leitura usa o cliente `db` do USUÁRIO autenticado (ver api/_lib/auth.ts),
+ * então a RLS decide o que volta — a IA não enxerga nada além do que a pessoa
+ * já enxergaria na tela. E a matriz de permissões filtra ANTES: uma ferramenta
+ * só é oferecida ao modelo se o usuário pode ver aquele módulo
  * (`ferramentasPermitidas` em shared/regras-nexo-ai.ts).
  *
- * FASE 1 = SOMENTE LEITURA + MEM├ôRIA. Nenhuma ferramenta escreve em tabela de
- * neg├│cio, nenhuma envia mensagem. Criar/atualizar/enviar ├® Fase 2.
+ * FASE 1 = SOMENTE LEITURA + MEMÓRIA. Nenhuma ferramenta escreve em tabela de
+ * negócio, nenhuma envia mensagem. Criar/atualizar/enviar é Fase 2.
  *
- * As ferramentas devolvem AGREGADOS, n├úo tabelas cruas: "42 leads, 8
- * qualificados" custa uma fra├º├úo dos tokens de 42 objetos JSON ÔÇö e ├® o que
- * responde ├á pergunta.
+ * As ferramentas devolvem AGREGADOS, não tabelas cruas: "42 leads, 8
+ * qualificados" custa uma fração dos tokens de 42 objetos JSON — e é o que
+ * responde à pergunta.
  * ===========================================================================
  */
 
@@ -51,14 +51,14 @@ async function contarPorStatus(
 }
 
 /* --------------------------------------------------------------------------
-   Cat├ílogo
+   Catálogo
    -------------------------------------------------------------------------- */
 
 const CATALOGO: Record<string, Ferramenta> = {
   consultar_leads: {
     definicao: {
       nome: 'consultar_leads',
-      descricao: 'Total de leads e quantos h├í em cada etapa do funil. Use para "quantos leads temos", "leads qualificados".',
+      descricao: 'Total de leads e quantos há em cada etapa do funil. Use para "quantos leads temos", "leads qualificados".',
       parametros: semArgs,
     },
     executar: (_a, { db }) => contarPorStatus(db, 'leads'),
@@ -67,7 +67,7 @@ const CATALOGO: Record<string, Ferramenta> = {
   consultar_clientes: {
     definicao: {
       nome: 'consultar_clientes',
-      descricao: 'N├║mero de clientes na carteira.',
+      descricao: 'Número de clientes na carteira.',
       parametros: semArgs,
     },
     executar: async (_a, { db }) => {
@@ -129,7 +129,7 @@ const CATALOGO: Record<string, Ferramenta> = {
   consultar_campanhas: {
     definicao: {
       nome: 'consultar_campanhas',
-      descricao: 'Campanhas de prospec├º├úo por status.',
+      descricao: 'Campanhas de prospecção por status.',
       parametros: semArgs,
     },
     executar: (_a, { db }) => contarPorStatus(db, 'campaigns'),
@@ -147,7 +147,7 @@ const CATALOGO: Record<string, Ferramenta> = {
   consultar_metricas: {
     definicao: {
       nome: 'consultar_metricas',
-      descricao: 'Vis├úo geral do neg├│cio: contagens de leads, clientes, vendas e projetos de uma vez. Use para "como estamos", "resumo geral".',
+      descricao: 'Visão geral do negócio: contagens de leads, clientes, vendas e projetos de uma vez. Use para "como estamos", "resumo geral".',
       parametros: semArgs,
     },
     executar: async (_a, { db }) => {
@@ -166,7 +166,7 @@ const CATALOGO: Record<string, Ferramenta> = {
   },
 };
 
-/** Defini├º├Áes para o modelo, j├í filtradas por permiss├úo. */
+/** Definições para o modelo, já filtradas por permissão. */
 export function definicoesDe(nomes: string[]): FerramentaModelo[] {
   return nomes.map((n) => CATALOGO[n]?.definicao).filter((d): d is FerramentaModelo => Boolean(d));
 }
@@ -174,9 +174,9 @@ export function definicoesDe(nomes: string[]): FerramentaModelo[] {
 /**
  * Executa uma ferramenta.
  *
- * `permitidas` ├® a lista j├í filtrada por permiss├úo do usu├írio. Uma chamada a
- * ferramenta fora dela ├® recusada mesmo que o modelo pe├ºa ÔÇö o modelo n├úo ├®
- * autoridade sobre permiss├úo. Toda sa├¡da passa pelo redator de segredos.
+ * `permitidas` é a lista já filtrada por permissão do usuário. Uma chamada a
+ * ferramenta fora dela é recusada mesmo que o modelo peça — o modelo não é
+ * autoridade sobre permissão. Toda saída passa pelo redator de segredos.
  */
 export async function executarFerramenta(
   nome: string,
@@ -185,7 +185,7 @@ export async function executarFerramenta(
   permitidas: string[],
 ): Promise<string> {
   if (!permitidas.includes(nome)) {
-    return JSON.stringify({ erro: 'Sem permiss├úo para esta consulta.' });
+    return JSON.stringify({ erro: 'Sem permissão para esta consulta.' });
   }
   const ferramenta = CATALOGO[nome];
   if (!ferramenta) {
@@ -199,6 +199,5 @@ export async function executarFerramenta(
   }
 }
 
-/** Ferramentas de leitura de dados que existem nesta fase (sem mem├│ria). */
+/** Ferramentas de leitura de dados que existem nesta fase (sem memória). */
 export const FERRAMENTAS_DADOS = Object.keys(CATALOGO);
-
