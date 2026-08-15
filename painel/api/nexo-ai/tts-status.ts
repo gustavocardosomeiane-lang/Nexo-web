@@ -1,20 +1,16 @@
 /**
  * GET /api/nexo-ai/tts-status
  *
- * Diagnóstico sem autenticação: testa se o Gemini TTS está acessível com
- * a GEMINI_API_KEY configurada no servidor. Não devolve áudio — só JSON
+ * Diagnóstico sem autenticação: testa exatamente o mesmo endpoint e
+ * payload usado por /api/nexo-ai/tts. Não devolve áudio — só JSON
  * com o resultado do teste. Não expõe a chave.
- *
- * Abra no browser: /api/nexo-ai/tts-status
- * Resultado esperado quando tudo OK:
- *   {"ok":true,"modelo":"gemini-2.5-flash-preview-tts","voz":"Aoede","bytes_audio":12345}
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-const TTS_MODELO = process.env.GEMINI_TTS_MODELO ?? 'gemini-2.5-flash-preview-tts';
-const TTS_VOZ = 'Aoede';
+const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+const TTS_MODELO = process.env.GEMINI_TTS_MODELO ?? 'gemini-3.1-flash-tts-preview';
+const TTS_VOZ = process.env.GEMINI_TTS_VOZ ?? 'Kore';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -29,23 +25,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({
       ok: false,
       problema: 'GEMINI_API_KEY não está configurada no Vercel.',
-      acao: 'Adicione GEMINI_API_KEY em Settings → Environment Variables do projeto nexo-painel no Vercel.',
+      acao: 'Adicione GEMINI_API_KEY em Settings → Environment Variables.',
     });
   }
+
+  const textoTeste = 'Olá, tudo bem?';
+  const input =
+    'Fale em português brasileiro, com voz feminina jovem, natural, calorosa e conversacional. ' +
+    'Soe como uma assistente de IA moderna, confiante e humana. ' +
+    'Não soe robótica, não fale como narradora de GPS, não exagere na entonação. ' +
+    `Texto a ser falado: ${textoTeste}`;
 
   let resp: Response;
   try {
     resp = await fetch(
-      `${GEMINI_BASE}/${TTS_MODELO}:generateContent?key=${encodeURIComponent(key)}`,
+      `${GEMINI_BASE}/interactions?key=${encodeURIComponent(key)}`,
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: 'Olá, tudo bem?' }] }],
-          generationConfig: {
-            responseModalities: ['AUDIO'],
-            speechConfig: {
-              voiceConfig: { prebuiltVoiceConfig: { voiceName: TTS_VOZ } },
+          model: TTS_MODELO,
+          input,
+          response_format: { type: 'audio' },
+          generation_config: {
+            speech_config: {
+              voice_config: {
+                prebuilt_voice_config: { voice_name: TTS_VOZ },
+              },
             },
           },
         }),
@@ -65,32 +71,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({
       ok: false,
       modelo: TTS_MODELO,
+      voz: TTS_VOZ,
+      http_status: resp.status,
       problema: msg,
-      acao: 'Verifique se a GEMINI_API_KEY tem acesso ao modelo TTS.',
+      resposta_completa: dados,
     });
   }
 
-  type Part = { inlineData?: { mimeType?: string; data?: string } };
-  const parts: Part[] =
-    ((dados as { candidates?: { content?: { parts?: Part[] } }[] })
-      ?.candidates?.[0]?.content?.parts) ?? [];
+  type AudioOutput = { data?: string; mime_type?: string };
+  const audioOutput = (dados as { output_audio?: AudioOutput }).output_audio;
 
-  for (const part of parts) {
-    const raw = part?.inlineData?.data;
-    if (!raw) continue;
+  if (audioOutput?.data) {
     return res.status(200).json({
       ok: true,
       modelo: TTS_MODELO,
       voz: TTS_VOZ,
-      bytes_audio: Buffer.from(raw, 'base64').length,
-      mime_type: part.inlineData?.mimeType ?? 'desconhecido',
+      bytes_audio: Buffer.from(audioOutput.data, 'base64').length,
+      mime_type: audioOutput.mime_type ?? 'desconhecido',
     });
   }
 
   return res.status(200).json({
     ok: false,
     modelo: TTS_MODELO,
-    problema: 'API respondeu 200 mas sem dados de áudio.',
-    resposta_resumo: JSON.stringify(dados).slice(0, 300),
+    voz: TTS_VOZ,
+    problema: 'API respondeu 200 mas sem output_audio.data.',
+    resposta_completa: dados,
   });
 }

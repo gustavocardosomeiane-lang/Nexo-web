@@ -5,6 +5,7 @@
  * (a chave fica só no servidor) e devolve o áudio para o navegador
  * tocar. O cliente nunca toca na credencial.
  *
+ * Usa a Interactions API do Gemini com gemini-3.1-flash-tts-preview.
  * Retorna audio/wav (converte PCM linear16 → WAV se necessário para
  * que AudioContext.decodeAudioData() funcione em todos os browsers).
  */
@@ -12,8 +13,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { autenticar, responderNaoAutenticado } from '../_lib/auth.js';
 
-const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-const TTS_MODELO = process.env.GEMINI_TTS_MODELO ?? 'gemini-2.5-flash-preview-tts';
+const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+const TTS_MODELO = process.env.GEMINI_TTS_MODELO ?? 'gemini-3.1-flash-tts-preview';
+const TTS_VOZ = process.env.GEMINI_TTS_VOZ ?? 'Kore';
 const LIMITE_TEXTO = 2000;
 
 function lerCorpo(req: VercelRequest): { texto?: string } {
@@ -47,21 +49,28 @@ function pcmParaWav(pcm: Buffer, sampleRate = 24000, canais = 1, bits = 16): Buf
 }
 
 function corpoGeminiTTS(textoLimpo: string): string {
+  const input =
+    'Fale em português brasileiro, com voz feminina jovem, natural, calorosa e conversacional. ' +
+    'Soe como uma assistente de IA moderna, confiante e humana. ' +
+    'Não soe robótica, não fale como narradora de GPS, não exagere na entonação. ' +
+    `Texto a ser falado: ${textoLimpo}`;
+
   return JSON.stringify({
-    contents: [{ parts: [{ text: textoLimpo }] }],
-    generationConfig: {
-      responseModalities: ['AUDIO'],
-      speechConfig: {
-        voiceConfig: {
-          prebuiltVoiceConfig: { voiceName: 'Aoede' },
+    model: TTS_MODELO,
+    input,
+    response_format: { type: 'audio' },
+    generation_config: {
+      speech_config: {
+        voice_config: {
+          prebuilt_voice_config: { voice_name: TTS_VOZ },
         },
       },
     },
   });
 }
 
-async function chamarGemini(key: string, textoLimpo: string): Promise<Response> {
-  const url = `${GEMINI_BASE}/${TTS_MODELO}:generateContent?key=${encodeURIComponent(key)}`;
+async function chamarGeminiTTS(key: string, textoLimpo: string): Promise<Response> {
+  const url = `${GEMINI_BASE}/interactions?key=${encodeURIComponent(key)}`;
   return fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -94,7 +103,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   let resposta: Response;
   try {
-    resposta = await chamarGemini(key, textoLimpo);
+    resposta = await chamarGeminiTTS(key, textoLimpo);
   } catch {
     return res.status(502).json({ ok: false, erro: 'Não foi possível alcançar o Gemini TTS.' });
   }
@@ -105,26 +114,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const msg =
       ((dados?.error as { message?: string } | undefined)?.message) ??
       `Gemini TTS respondeu ${resposta.status}.`;
-    console.error('[nexo-ai/tts]', msg);
+    console.error('[nexo-ai/tts]', msg, JSON.stringify(dados).slice(0, 300));
     return res
       .status(resposta.status >= 400 && resposta.status < 600 ? resposta.status : 500)
       .json({ ok: false, erro: msg });
   }
 
-  type Part = { inlineData?: { mimeType?: string; data?: string } };
-  const parts: Part[] =
-    ((dados as { candidates?: { content?: { parts?: Part[] } }[] })
-      ?.candidates?.[0]?.content?.parts) ?? [];
+  // Extrai o áudio da Interactions API: output_audio.data
+  type AudioOutput = { data?: string; mime_type?: string };
+  const audioOutput = (dados as { output_audio?: AudioOutput }).output_audio;
 
-  for (const part of parts) {
-    const raw = part?.inlineData?.data;
-    if (!raw) continue;
-
-    const mime = (part.inlineData?.mimeType ?? 'audio/wav').toLowerCase();
-    const buf = Buffer.from(raw, 'base64');
-
-    // PCM linear-16 não tem cabeçalho → envolve em WAV antes de enviar.
-    const isPcm = mime.includes('l16') || mime.includes('pcm') || mime.includes('raw');
+  if (audioOutput?.data) {
+    const mime = (audioOutput.mime_type ?? '').toLowerCase();
+    const buf = Buffer.from(audioOutput.data, 'base64');
+    const isPcm = mime.includes('l16') || mime.includes('pcm') || mime.includes('raw') || !mime.includes('wav');
     const audioFinal = isPcm ? pcmParaWav(buf) : buf;
     const mimeType = isPcm ? 'audio/wav' : mime;
 
@@ -134,11 +137,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).send(audioFinal);
   }
 
-  // Nenhum dado de áudio na resposta — loga o máximo possível para diagnóstico.
   const resumo = JSON.stringify(dados).slice(0, 500);
   console.error(`[nexo-ai/tts] sem áudio na resposta (modelo: ${TTS_MODELO}):`, resumo);
   return res.status(500).json({
     ok: false,
     erro: `Gemini TTS (${TTS_MODELO}) não retornou dados de áudio.`,
+    debug: resumo,
   });
 }
