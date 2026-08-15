@@ -144,15 +144,21 @@ export function useNexoAI(): UseNexoAI {
     irPara('listening');
     v.ouvir({
       aoParcial: setParcialEscuta,
+      aoNivel: setNivelVoz,
       aoFinal: (t) => {
         setParcialEscuta('');
+        setNivelVoz(0);
         void enviar(t);
       },
       aoErro: (motivo) => {
+        setNivelVoz(0);
         setErro(motivo);
         setEstado((s) => (s === 'listening' ? 'idle' : s));
       },
-      aoFim: () => setEstado((s) => (s === 'listening' ? 'idle' : s)),
+      aoFim: () => {
+        setNivelVoz(0);
+        setEstado((s) => (s === 'listening' ? 'idle' : s));
+      },
     });
   }, [estado, enviar, irPara]);
 

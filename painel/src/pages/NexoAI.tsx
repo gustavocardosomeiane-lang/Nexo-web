@@ -22,7 +22,7 @@ export function NexoAI() {
 
   useEffect(() => {
     fimRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [ai.mensagens, ai.parcialEscuta, ai.estado]);
+  }, [ai.mensagens, ai.estado]);
 
   const submeter = () => {
     const t = texto.trim();
@@ -67,14 +67,13 @@ export function NexoAI() {
           </div>
         )}
 
-        {(ai.mensagens.length > 0 || ai.parcialEscuta) && (
+        {ai.mensagens.some((m) => m.papel === 'assistant') && (
           <div className="nexo-ai-conversa" aria-live="polite">
-            {ai.mensagens.map((m) => (
-              <div key={m.id} className={`nexo-ai-bolha de-${m.papel}`}>
+            {ai.mensagens.filter((m) => m.papel === 'assistant').map((m) => (
+              <div key={m.id} className="nexo-ai-bolha de-assistant">
                 {m.conteudo}
               </div>
             ))}
-            {ai.parcialEscuta && <div className="nexo-ai-bolha parcial">{ai.parcialEscuta}</div>}
             <div ref={fimRef} />
           </div>
         )}

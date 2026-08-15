@@ -7,7 +7,7 @@
  *   - Fallback para a voz nativa do navegador APENAS em erro de rede (endpoint
  *     inacessível). Erros de API/autenticação propagam via cb.aoErro — nunca
  *     ficam silenciosos.
- *   - STT: Web Speech API (mesma lógica de sempre)
+ *   - STT: Web Speech API com AnalyserNode no microfone → amplitude real durante escuta
  *
  * Trocar de provider: mudar criarProvedorVoz() no final — nada mais muda.
  */
@@ -27,6 +27,8 @@ export interface AoOuvir {
   aoFinal?: (texto: string) => void;
   aoErro?: (motivo: string) => void;
   aoFim?: () => void;
+  /** 0..1, amplitude real do microfone durante a escuta. */
+  aoNivel?: (nivel: number) => void;
 }
 
 export interface ProvedorVoz {
@@ -99,6 +101,15 @@ class VozGemini implements ProvedorVoz {
   private nivelTimer: ReturnType<typeof setInterval> | null = null;
   private cancelado = false;
 
+  // Análise de amplitude do microfone durante STT
+  private micStream: MediaStream | null = null;
+  private micSource: MediaStreamAudioSourceNode | null = null;
+  private micAnalyser: AnalyserNode | null = null;
+  private micNivelTimer: ReturnType<typeof setInterval> | null = null;
+
+  // Cache do token Supabase — evita round-trip repetido a cada chamada TTS
+  private tokenCache: { value: string; expiresAt: number } | null = null;
+
   /* ---- capacidades ---- */
 
   get podeFalar(): boolean {
@@ -122,6 +133,10 @@ class VozGemini implements ProvedorVoz {
   }
 
   private async tentarGemini(texto: string, cb: AoFalar): Promise<void> {
+    // Pré-aquece o AudioContext imediatamente — correrá em paralelo com a rede
+    // para eliminar o atraso de criação/resume após o áudio chegar.
+    const ctxPromise = this.obterCtxPronto();
+
     let resp: Response;
     try {
       const token = await this.token();
@@ -164,11 +179,9 @@ class VozGemini implements ProvedorVoz {
     console.info(`[VozGemini] áudio gerado pelo Gemini (modelo: ${modeloUsado})`);
 
     try {
-      const raw = await resp.arrayBuffer();
-      if (this.cancelado) return;
-
-      const ctx = this.obterCtx();
-      if (ctx.state === 'suspended') await ctx.resume();
+      // Lê o buffer e aguarda o AudioContext prontos em paralelo — o ctx já deve
+      // ter resolvido durante a chamada de rede, então a espera aqui é zero.
+      const [raw, ctx] = await Promise.all([resp.arrayBuffer(), ctxPromise]);
       if (this.cancelado) return;
 
       const audioBuffer = await ctx.decodeAudioData(raw);
@@ -245,7 +258,7 @@ class VozGemini implements ProvedorVoz {
     }
   }
 
-  /* ---- Amplitude real via AnalyserNode para o orbe ---- */
+  /* ---- Amplitude real via AnalyserNode para o orbe (TTS) ---- */
 
   private iniciarNivel(cb: AoFalar): void {
     const analyser = this.analyser;
@@ -266,6 +279,8 @@ class VozGemini implements ProvedorVoz {
     }
   }
 
+  /* ---- AudioContext ---- */
+
   private obterCtx(): AudioContext {
     if (!this.audioCtx || this.audioCtx.state === 'closed') {
       this.audioCtx = new AudioContext();
@@ -273,12 +288,93 @@ class VozGemini implements ProvedorVoz {
     return this.audioCtx;
   }
 
-  private async token(): Promise<string | null> {
-    const { data } = await getSupabase().auth.getSession();
-    return data.session?.access_token ?? null;
+  /** Garante que o AudioContext está running; resolve assim que pronto. */
+  private async obterCtxPronto(): Promise<AudioContext> {
+    const ctx = this.obterCtx();
+    if (ctx.state === 'suspended') await ctx.resume();
+    return ctx;
   }
 
-  /* ---- STT (mesma lógica de sempre) ---- */
+  /* ---- Token Supabase com cache ---- */
+
+  private async token(): Promise<string | null> {
+    const agora = Date.now();
+    // Reutiliza o token se ainda for válido por pelo menos 30 s
+    if (this.tokenCache && this.tokenCache.expiresAt > agora + 30_000) {
+      return this.tokenCache.value;
+    }
+    const { data } = await getSupabase().auth.getSession();
+    const session = data.session;
+    if (session?.access_token) {
+      this.tokenCache = {
+        value: session.access_token,
+        expiresAt: (session.expires_at ?? 0) * 1000,
+      };
+      return session.access_token;
+    }
+    this.tokenCache = null;
+    return null;
+  }
+
+  /* ---- Amplitude real do microfone via AnalyserNode durante STT ---- */
+
+  private async iniciarAnalyseMic(cb: AoOuvir): Promise<void> {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      // Se o reconhecimento já parou enquanto aguardávamos, libera o stream
+      if (!this.reconhecimento) {
+        for (const track of stream.getTracks()) track.stop();
+        return;
+      }
+      this.micStream = stream;
+
+      const ctx = this.obterCtx();
+      if (ctx.state === 'suspended') await ctx.resume();
+
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      // Conecta só ao analyser, NÃO ao destination — evita feedback de áudio
+      source.connect(analyser);
+
+      this.micSource = source;
+      this.micAnalyser = analyser;
+
+      const buf = new Uint8Array(analyser.frequencyBinCount);
+      this.micNivelTimer = setInterval(() => {
+        if (!this.micAnalyser) return;
+        this.micAnalyser.getByteTimeDomainData(buf);
+        let soma = 0;
+        for (const v of buf) soma += Math.abs(v - 128);
+        cb.aoNivel?.(Math.min(1, (soma / buf.length / 128) * 8));
+      }, 60);
+    } catch {
+      // getUserMedia negado ou indisponível — amplitude visual não disponível,
+      // mas o STT continua funcionando normalmente.
+    }
+  }
+
+  private pararAnalyseMic(): void {
+    if (this.micNivelTimer) {
+      clearInterval(this.micNivelTimer);
+      this.micNivelTimer = null;
+    }
+    if (this.micSource) {
+      try { this.micSource.disconnect(); } catch { /* já desconectado */ }
+      this.micSource = null;
+    }
+    if (this.micAnalyser) {
+      try { this.micAnalyser.disconnect(); } catch { /* já desconectado */ }
+      this.micAnalyser = null;
+    }
+    if (this.micStream) {
+      for (const track of this.micStream.getTracks()) track.stop();
+      this.micStream = null;
+    }
+  }
+
+  /* ---- STT ---- */
 
   ouvir(cb: AoOuvir = {}): void {
     const Construtor = construtorReconhecimento();
@@ -319,12 +415,24 @@ class VozGemini implements ProvedorVoz {
       cb.aoErro?.(erros[e.error] ?? `Falha no reconhecimento de voz (${e.error}).`);
     };
 
-    rec.onend = () => cb.aoFim?.();
+    rec.onend = () => {
+      this.pararAnalyseMic();
+      cb.aoNivel?.(0);
+      cb.aoFim?.();
+    };
+
     this.reconhecimento = rec;
-    try { rec.start(); } catch { cb.aoErro?.('Não foi possível iniciar a escuta.'); }
+    try {
+      rec.start();
+      // Inicia captura de amplitude do microfone em paralelo com o STT
+      void this.iniciarAnalyseMic(cb);
+    } catch {
+      cb.aoErro?.('Não foi possível iniciar a escuta.');
+    }
   }
 
   pararEscuta(): void {
+    this.pararAnalyseMic();
     if (this.reconhecimento) {
       try { this.reconhecimento.abort(); } catch { /* já parado */ }
       this.reconhecimento = null;
