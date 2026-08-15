@@ -125,20 +125,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     /* ---- Rodada 2: só se o modelo pediu ferramenta. Uma vez, sem loop. ---- */
     if (resposta.chamadas.length > 0) {
+      const chamadasRound1 = resposta.chamadas;
       const resultados = await Promise.all(
-        resposta.chamadas.map(async (c) => ({
+        chamadasRound1.map(async (c) => ({
           id: c.id,
           conteudo: await executarFerramenta(c.nome, c.argumentos, { db, usuarioId }, permitidas),
         })),
       );
 
-      // O histórico da 2ª rodada precisa conter o turno de tool_use do assistente.
       resposta = await modelo.conversar({
         sistema,
-        mensagens: [
-          ...mensagens,
-          { papel: 'assistant', conteudo: resposta.texto || '(consultando dados)' },
-        ],
+        mensagens,
+        chamadasAnteriores: chamadasRound1,
         resultados,
         maxTokensSaida: 1024,
       });

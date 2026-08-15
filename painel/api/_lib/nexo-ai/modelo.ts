@@ -41,6 +41,8 @@ export interface PedidoModelo {
     id: string;
     conteudo: string;
   }[];
+  /** Chamadas de ferramenta do turno anterior (round 2 apenas). */
+  chamadasAnteriores?: ChamadaFerramenta[];
   maxTokensSaida?: number;
 }
 
@@ -76,7 +78,7 @@ const GEMINI_BASE =
 /**
  * Modelo Gemini utilizado pela NEXO AI.
  */
-const GEMINI_MODELO = 'gemini-2.0-flash';
+const GEMINI_MODELO = 'gemini-3.6-flash';
 
 function chaveGemini(): string {
   const key = (
@@ -180,6 +182,36 @@ function montarCorpoGemini(
         ],
       });
     }
+  }
+
+  /*
+   * Round 2 (ferramenta executada): acrescenta o turno "model" com as
+   * chamadas de função e o turno "user" com as respostas das ferramentas.
+   * O Gemini exige esta sequência para dar a resposta final.
+   */
+  if (
+    pedido.chamadasAnteriores?.length &&
+    pedido.resultados?.length
+  ) {
+    contents.push({
+      role: 'model',
+      parts: pedido.chamadasAnteriores.map((c) => ({
+        functionCall: {
+          name: c.nome,
+          args: c.argumentos,
+        },
+      })),
+    });
+
+    contents.push({
+      role: 'user',
+      parts: pedido.resultados.map((r) => ({
+        functionResponse: {
+          name: r.id,
+          response: { content: r.conteudo },
+        },
+      })),
+    });
   }
 
   /*
