@@ -175,6 +175,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ok: false,
         erro: 'O modelo de IA não conseguiu responder. Tente novamente em instantes.',
         codigo: e.codigo ?? 'modelo_erro',
+        detalhe: msg,
       });
     }
 
