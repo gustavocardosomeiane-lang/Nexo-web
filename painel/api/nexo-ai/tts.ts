@@ -54,12 +54,17 @@ function pcmParaWav(pcm: Buffer, sampleRate = 24000, canais = 1, bits = 16): Buf
 
 function corpoGeminiTTS(textoLimpo: string): string {
   return JSON.stringify({
+    system_instruction: {
+      parts: [{
+        text: 'Você é NEXO, uma assistente virtual feminina brasileira. Fale em português do Brasil com voz calorosa, natural e conversacional. Use entonação humana, pausas naturais e ritmo fluente — sem sotaque estrangeiro, sem voz sintética ou robótica.',
+      }],
+    },
     contents: [{ parts: [{ text: textoLimpo }] }],
     generationConfig: {
       responseModalities: ['AUDIO'],
       speechConfig: {
         voiceConfig: {
-          // Aoede: voz feminina, conversacional e natural — melhor para pt-BR.
+          // Aoede: breezy, conversacional — melhor para pt-BR natural.
           prebuiltVoiceConfig: { voiceName: 'Aoede' },
         },
       },
