@@ -5,6 +5,11 @@
  * (a chave fica só no servidor) e devolve o áudio para o navegador
  * tocar. O cliente nunca toca na credencial.
  *
+ * Estratégia de modelo:
+ *   1. Tenta GEMINI_TTS_MODELO (padrão: gemini-2.5-flash-preview-tts)
+ *   2. Se falhar com status de erro, tenta MODELO_FALLBACK (gemini-2.5-flash)
+ *   3. Devolve header X-TTS-Model indicando qual modelo foi usado
+ *
  * Retorna audio/wav (converte PCM linear16 → WAV se necessário para
  * que AudioContext.decodeAudioData() funcione em todos os browsers).
  */
@@ -13,7 +18,8 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { autenticar, responderNaoAutenticado } from '../_lib/auth.js';
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-const TTS_MODELO = process.env.GEMINI_TTS_MODELO ?? 'gemini-2.5-flash-preview-tts';
+const TTS_MODELO_PRINCIPAL = process.env.GEMINI_TTS_MODELO ?? 'gemini-2.5-flash-preview-tts';
+const TTS_MODELO_FALLBACK = 'gemini-2.5-flash';
 const LIMITE_TEXTO = 2000;
 
 function lerCorpo(req: VercelRequest): { texto?: string } {
@@ -46,6 +52,34 @@ function pcmParaWav(pcm: Buffer, sampleRate = 24000, canais = 1, bits = 16): Buf
   return Buffer.concat([header, pcm]);
 }
 
+function corpoGeminiTTS(textoLimpo: string): string {
+  return JSON.stringify({
+    contents: [{ parts: [{ text: textoLimpo }] }],
+    generationConfig: {
+      responseModalities: ['AUDIO'],
+      speechConfig: {
+        voiceConfig: {
+          // Aoede: voz feminina, conversacional e natural — melhor para pt-BR.
+          prebuiltVoiceConfig: { voiceName: 'Aoede' },
+        },
+      },
+    },
+  });
+}
+
+async function chamarGemini(
+  modelo: string,
+  key: string,
+  textoLimpo: string,
+): Promise<Response> {
+  const url = `${GEMINI_BASE}/${modelo}:generateContent?key=${encodeURIComponent(key)}`;
+  return fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: corpoGeminiTTS(textoLimpo),
+  });
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -69,25 +103,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ ok: false, erro: 'Texto vazio.' });
   }
 
-  const url = `${GEMINI_BASE}/${TTS_MODELO}:generateContent?key=${encodeURIComponent(key)}`;
-
+  // Tenta o modelo principal; se falhar, tenta o fallback.
   let resposta: Response;
+  let modeloUsado = TTS_MODELO_PRINCIPAL;
+
   try {
-    resposta = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: textoLimpo }] }],
-        generationConfig: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: 'Kore' },
-            },
-          },
-        },
-      }),
-    });
+    resposta = await chamarGemini(TTS_MODELO_PRINCIPAL, key, textoLimpo);
+
+    if (!resposta.ok && TTS_MODELO_PRINCIPAL !== TTS_MODELO_FALLBACK) {
+      const statusPrincipal = resposta.status;
+      console.warn(
+        `[nexo-ai/tts] ${TTS_MODELO_PRINCIPAL} respondeu ${statusPrincipal}, tentando ${TTS_MODELO_FALLBACK}`,
+      );
+      resposta = await chamarGemini(TTS_MODELO_FALLBACK, key, textoLimpo);
+      modeloUsado = TTS_MODELO_FALLBACK;
+    }
   } catch {
     return res.status(502).json({ ok: false, erro: 'Não foi possível alcançar o Gemini TTS.' });
   }
@@ -97,7 +127,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!resposta.ok || !dados) {
     const msg =
       ((dados?.error as { message?: string } | undefined)?.message) ??
-      `Gemini TTS respondeu ${resposta.status}.`;
+      `Gemini TTS respondeu ${resposta.status} (modelo: ${modeloUsado}).`;
     console.error('[nexo-ai/tts]', msg);
     return res
       .status(resposta.status >= 400 && resposta.status < 600 ? resposta.status : 500)
@@ -123,9 +153,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     res.setHeader('Content-Type', mimeType);
     res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-TTS-Model', modeloUsado);
     return res.status(200).send(audioFinal);
   }
 
-  console.error('[nexo-ai/tts] sem áudio na resposta:', JSON.stringify(dados).slice(0, 300));
-  return res.status(500).json({ ok: false, erro: 'Gemini TTS não retornou dados de áudio.' });
+  // Nenhum dado de áudio na resposta — loga o máximo possível para diagnóstico.
+  const resumo = JSON.stringify(dados).slice(0, 500);
+  console.error(`[nexo-ai/tts] sem áudio na resposta (modelo: ${modeloUsado}):`, resumo);
+  return res.status(500).json({
+    ok: false,
+    erro: `Gemini TTS (${modeloUsado}) não retornou dados de áudio.`,
+  });
 }

@@ -4,7 +4,9 @@
  * Provider ativo: VozGemini
  *   - TTS: chama /api/nexo-ai/tts (Gemini neural no servidor, chave oculta)
  *   - Reproduz via Web AudioContext com AnalyserNode → amplitude real para o orbe
- *   - Fallback automático para a voz nativa do navegador se o endpoint falhar
+ *   - Fallback para a voz nativa do navegador APENAS em erro de rede (endpoint
+ *     inacessível). Erros de API/autenticação propagam via cb.aoErro — nunca
+ *     ficam silenciosos.
  *   - STT: Web Speech API (mesma lógica de sempre)
  *
  * Trocar de provider: mudar criarProvedorVoz() no final — nada mais muda.
@@ -67,7 +69,7 @@ function construtorReconhecimento(): ConstrutorReconhecimento | null {
 }
 
 /* --------------------------------------------------------------------------
-   Seleção de voz feminina — mantido para o fallback nativo
+   Seleção de voz feminina — mantido para o fallback nativo de rede
    -------------------------------------------------------------------------- */
 
 export function escolherVozFeminina(vozes: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null {
@@ -84,7 +86,7 @@ export function escolherVozFeminina(vozes: SpeechSynthesisVoice[]): SpeechSynthe
 }
 
 /* --------------------------------------------------------------------------
-   VozGemini — TTS neural via /api/nexo-ai/tts + fallback para voz nativa
+   VozGemini — TTS neural via /api/nexo-ai/tts
    -------------------------------------------------------------------------- */
 
 class VozGemini implements ProvedorVoz {
@@ -120,20 +122,48 @@ class VozGemini implements ProvedorVoz {
   }
 
   private async tentarGemini(texto: string, cb: AoFalar): Promise<void> {
+    let resp: Response;
     try {
       const token = await this.token();
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
-      const resp = await fetch('/api/nexo-ai/tts', {
+      resp = await fetch('/api/nexo-ai/tts', {
         method: 'POST',
         headers,
         body: JSON.stringify({ texto }),
       });
-
-      if (!resp.ok) throw new Error(`status ${resp.status}`);
+    } catch (e) {
+      // Erro de rede — endpoint inacessível. Fallback para voz nativa.
       if (this.cancelado) return;
+      console.warn('[VozGemini] erro de rede, usando voz nativa:', e instanceof Error ? e.message : String(e));
+      this.falarNativo(texto, cb);
+      return;
+    }
 
+    if (this.cancelado) return;
+
+    if (!resp.ok) {
+      // Erro da API (autenticação, modelo, configuração). NÃO usa fallback —
+      // o erro precisa ficar visível para que seja corrigido.
+      let mensagem = `Gemini TTS retornou status ${resp.status}`;
+      try {
+        const contentType = resp.headers.get('content-type') ?? '';
+        if (contentType.includes('application/json')) {
+          const body = await resp.json() as { erro?: string };
+          if (body?.erro) mensagem = body.erro;
+        }
+      } catch { /* ignora erro ao ler o corpo */ }
+      console.error('[VozGemini] falha no endpoint TTS:', mensagem);
+      cb.aoErro?.(mensagem);
+      return;
+    }
+
+    // Loga qual modelo foi usado para confirmar que é o Gemini (não o nativo).
+    const modeloUsado = resp.headers.get('X-TTS-Model') ?? 'gemini';
+    console.info(`[VozGemini] áudio gerado pelo Gemini (modelo: ${modeloUsado})`);
+
+    try {
       const raw = await resp.arrayBuffer();
       if (this.cancelado) return;
 
@@ -166,8 +196,9 @@ class VozGemini implements ProvedorVoz {
       source.start(0);
     } catch (e) {
       if (this.cancelado) return;
-      console.warn('[VozGemini] fallback:', e instanceof Error ? e.message : String(e));
-      this.falarNativo(texto, cb);
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('[VozGemini] erro ao decodificar áudio:', msg);
+      cb.aoErro?.(`Erro ao reproduzir áudio do Gemini: ${msg}`);
     }
   }
 
