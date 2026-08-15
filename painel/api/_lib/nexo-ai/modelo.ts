@@ -1,11 +1,8 @@
 /**
  * Camada de MODELO da NEXO AI
  *
- * Provider principal:
+ * Provider único:
  *   Google Gemini
- *
- * Fallback:
- *   Anthropic
  *
  * As chaves ficam exclusivamente no servidor.
  */
@@ -70,226 +67,16 @@ export class ErroModelo extends Error {
 }
 
 /* ==========================================================================
-   ANTHROPIC — FALLBACK
-   ========================================================================== */
-
-const ANTHROPIC_BASE =
-  'https://api.anthropic.com/v1/messages';
-
-const ANTHROPIC_VERSION = '2023-06-01';
-
-function modeloAnthropic(): string {
-  return (
-    process.env.NEXO_AI_MODELO ??
-    'claude-sonnet-5'
-  ).trim() || 'claude-sonnet-5';
-}
-
-function chaveAnthropic(): string {
-  const key = (
-    process.env.NEXO_AI_API_KEY ?? ''
-  ).trim();
-
-  if (!key) {
-    throw new ErroModelo(
-      'NEXO_AI_API_KEY não configurada no servidor.',
-      500,
-      'sem_credencial'
-    );
-  }
-
-  return key;
-}
-
-function montarCorpoAnthropic(
-  pedido: PedidoModelo
-) {
-  const mensagens = pedido.mensagens.map((m) => ({
-    role:
-      m.papel === 'assistant'
-        ? 'assistant'
-        : 'user',
-    content: m.conteudo,
-  }));
-
-  const corpo: Record<string, unknown> = {
-    model: modeloAnthropic(),
-    max_tokens:
-      pedido.maxTokensSaida ?? 1024,
-    system: pedido.sistema,
-    messages: mensagens,
-  };
-
-  if (pedido.ferramentas?.length) {
-    corpo.tools =
-      pedido.ferramentas.map((f) => ({
-        name: f.nome,
-        description: f.descricao,
-        input_schema: f.parametros,
-      }));
-  }
-
-  if (pedido.resultados?.length) {
-    mensagens.push({
-      role: 'user',
-      content: pedido.resultados
-        .map((r) => ({
-          type: 'text',
-          text: `Resultado da ferramenta ${r.id}: ${r.conteudo}`,
-        }))
-        .map((x) => x.text)
-        .join('\n'),
-    });
-  }
-
-  return corpo;
-}
-
-function lerRespostaAnthropic(
-  dados: Record<string, unknown>
-): RespostaModelo {
-  const blocos = Array.isArray(dados.content)
-    ? dados.content
-    : [];
-
-  let texto = '';
-
-  const chamadas: ChamadaFerramenta[] = [];
-
-  for (const bloco of blocos as Record<
-    string,
-    unknown
-  >[]) {
-    if (
-      bloco.type === 'text' &&
-      typeof bloco.text === 'string'
-    ) {
-      texto += bloco.text;
-    }
-
-    if (bloco.type === 'tool_use') {
-      chamadas.push({
-        id: String(bloco.id),
-        nome: String(bloco.name),
-        argumentos:
-          (bloco.input as Record<
-            string,
-            unknown
-          >) ?? {},
-      });
-    }
-  }
-
-  const uso =
-    (dados.usage as Record<
-      string,
-      number
-    >) ?? {};
-
-  return {
-    texto: texto.trim(),
-    chamadas,
-    tokens: {
-      entrada:
-        uso.input_tokens ?? 0,
-      saida:
-        uso.output_tokens ?? 0,
-    },
-  };
-}
-
-export const anthropicProvider: ModeloProvider = {
-  nome: 'anthropic',
-
-  get configurado() {
-    return Boolean(
-      (
-        process.env.NEXO_AI_API_KEY ?? ''
-      ).trim()
-    );
-  },
-
-  async conversar(
-    pedido: PedidoModelo
-  ): Promise<RespostaModelo> {
-    let resposta: Response;
-
-    try {
-      resposta = await fetch(
-        ANTHROPIC_BASE,
-        {
-          method: 'POST',
-          headers: {
-            'content-type':
-              'application/json',
-            'x-api-key':
-              chaveAnthropic(),
-            'anthropic-version':
-              ANTHROPIC_VERSION,
-          },
-          body: JSON.stringify(
-            montarCorpoAnthropic(pedido)
-          ),
-        }
-      );
-    } catch {
-      throw new ErroModelo(
-        'Não foi possível alcançar o modelo de IA.',
-        502,
-        'rede'
-      );
-    }
-
-    const dados =
-      (await resposta
-        .json()
-        .catch(() => null)) as Record<
-        string,
-        unknown
-      > | null;
-
-    if (!resposta.ok || !dados) {
-      const erro =
-        dados?.error as
-          | {
-              message?: string;
-            }
-          | undefined;
-
-      const detalhe =
-        erro?.message ??
-        `O modelo respondeu ${resposta.status}.`;
-
-      throw new ErroModelo(
-        detalhe,
-        resposta.status,
-        'modelo_recusou'
-      );
-    }
-
-    return lerRespostaAnthropic(dados);
-  },
-};
-
-/* ==========================================================================
-   GOOGLE GEMINI — PROVIDER PRINCIPAL
+   GOOGLE GEMINI — PROVIDER ÚNICO
    ========================================================================== */
 
 const GEMINI_BASE =
   'https://generativelanguage.googleapis.com/v1beta/models';
 
 /**
- * IMPORTANTE:
- *
- * Este é o modelo que foi TESTADO MANUALMENTE
- * pelo terminal e respondeu:
- *
- * GEMINI OK
- *
- * Portanto não vamos depender de uma variável
- * antiga NEXO_AI_MODELO_GEMINI.
+ * Modelo Gemini utilizado pela NEXO AI.
  */
-const GEMINI_MODELO = 'gemini-3.6-flash';
+const GEMINI_MODELO = 'gemini-2.0-flash';
 
 function chaveGemini(): string {
   const key = (
@@ -328,7 +115,7 @@ interface GeminiContent {
 
 function montarCorpoGemini(
   pedido: PedidoModelo
-) {
+): Record<string, unknown> {
   const contents: GeminiContent[] = [];
 
   for (const mensagem of pedido.mensagens) {
@@ -340,12 +127,17 @@ function montarCorpoGemini(
     const texto =
       mensagem.conteudo.trim();
 
-    if (!texto) continue;
+    if (!texto) {
+      continue;
+    }
 
     const ultimo =
       contents[contents.length - 1];
 
-    if (ultimo && ultimo.role === role) {
+    if (
+      ultimo &&
+      ultimo.role === role
+    ) {
       ultimo.parts.push({
         text: texto,
       });
@@ -413,10 +205,8 @@ function montarCorpoGemini(
           pedido.ferramentas.map(
             (f) => ({
               name: f.nome,
-              description:
-                f.descricao,
-              parameters:
-                f.parametros,
+              description: f.descricao,
+              parameters: f.parametros,
             })
           ),
       },
@@ -485,13 +275,10 @@ function lerRespostaGemini(
 
     if (part.functionCall) {
       chamadas.push({
-        id:
-          part.functionCall.name,
-        nome:
-          part.functionCall.name,
+        id: part.functionCall.name,
+        nome: part.functionCall.name,
         argumentos:
-          part.functionCall.args ??
-          {},
+          part.functionCall.args ?? {},
       });
     }
   }
@@ -514,148 +301,123 @@ function lerRespostaGemini(
   };
 }
 
-export const geminiProvider: ModeloProvider =
-  {
-    nome: 'gemini',
+export const geminiProvider: ModeloProvider = {
+  nome: 'gemini',
 
-    get configurado() {
-      const key =
-        process.env.GEMINI_API_KEY;
+  get configurado() {
+    const key =
+      process.env.GEMINI_API_KEY;
 
-      return (
-        typeof key === 'string' &&
-        key.trim().length > 0
+    return (
+      typeof key === 'string' &&
+      key.trim().length > 0
+    );
+  },
+
+  async conversar(
+    pedido: PedidoModelo
+  ): Promise<RespostaModelo> {
+    const key = chaveGemini();
+
+    const url =
+      `${GEMINI_BASE}/${GEMINI_MODELO}` +
+      `:generateContent?key=${encodeURIComponent(
+        key
+      )}`;
+
+    let resposta: Response;
+
+    try {
+      resposta = await fetch(
+        url,
+        {
+          method: 'POST',
+
+          headers: {
+            'content-type':
+              'application/json',
+          },
+
+          body: JSON.stringify(
+            montarCorpoGemini(pedido)
+          ),
+        }
       );
-    },
+    } catch {
+      throw new ErroModelo(
+        'Não foi possível alcançar a API do Gemini.',
+        502,
+        'rede'
+      );
+    }
 
-    async conversar(
-      pedido: PedidoModelo
-    ): Promise<RespostaModelo> {
-      const key = chaveGemini();
+    const dados =
+      (await resposta
+        .json()
+        .catch(() => null)) as Record<
+        string,
+        unknown
+      > | null;
 
-      const url =
-        `${GEMINI_BASE}/${GEMINI_MODELO}` +
-        `:generateContent?key=${encodeURIComponent(
-          key
-        )}`;
+    if (!resposta.ok || !dados) {
+      const erro =
+        dados?.error as
+          | {
+              message?: string;
+              status?: string;
+            }
+          | undefined;
 
-      let resposta: Response;
+      const detalhe =
+        erro?.message ??
+        `Gemini respondeu ${resposta.status}.`;
 
-      try {
-        resposta = await fetch(
-          url,
-          {
-            method: 'POST',
-
-            headers: {
-              'content-type':
-                'application/json',
-            },
-
-            body: JSON.stringify(
-              montarCorpoGemini(pedido)
-            ),
-          }
-        );
-      } catch {
-        throw new ErroModelo(
-          'Não foi possível alcançar a API do Gemini.',
-          502,
-          'rede'
-        );
-      }
-
-      const dados =
-        (await resposta
-          .json()
-          .catch(() => null)) as Record<
-          string,
-          unknown
-        > | null;
-
-      if (!resposta.ok || !dados) {
-        const erro =
-          dados?.error as
-            | {
-                message?: string;
-                status?: string;
-              }
-            | undefined;
-
-        const detalhe =
-          erro?.message ??
-          `Gemini respondeu ${resposta.status}.`;
-
-        console.error(
-          '[NEXO AI] Gemini error:',
-          {
-            status:
-              resposta.status,
-            detalhe,
-          }
-        );
-
-        throw new ErroModelo(
+      console.error(
+        '[NEXO AI] Gemini error:',
+        {
+          status: resposta.status,
           detalhe,
-          resposta.status,
-          'gemini_recusou'
-        );
-      }
-
-      return lerRespostaGemini(
-        dados
+        }
       );
-    },
-  };
+
+      throw new ErroModelo(
+        detalhe,
+        resposta.status,
+        'gemini_recusou'
+      );
+    }
+
+    return lerRespostaGemini(dados);
+  },
+};
 
 /* ==========================================================================
-   PROVIDER ATIVO — com fallback em tempo de execução
+   PROVIDER ATIVO
    ========================================================================== */
 
 /**
- * Gemini é prioridade quando GEMINI_API_KEY está configurada.
- * Se Gemini falhar em runtime E Anthropic estiver configurado,
- * a chamada é repetida no Anthropic (fallback transparente).
+ * A NEXO AI utiliza exclusivamente o Google Gemini.
  *
- * Se só um provider estiver configurado, retorna ele direto.
+ * Não existe fallback para Anthropic.
  */
 export function provedorAtivo(): ModeloProvider {
-  const geminiOk = geminiProvider.configurado;
-  const anthropicOk = anthropicProvider.configurado;
-
-  if (geminiOk && anthropicOk) {
-    return provedorComFallback;
+  if (geminiProvider.configurado) {
+    return geminiProvider;
   }
-
-  if (geminiOk) return geminiProvider;
-  if (anthropicOk) return anthropicProvider;
 
   return {
     nome: 'nenhum',
-    get configurado() { return false; },
+
+    get configurado() {
+      return false;
+    },
+
     async conversar(): Promise<RespostaModelo> {
       throw new ErroModelo(
-        'Nenhum provedor de IA está configurado no servidor.',
+        'GEMINI_API_KEY não está configurada no servidor.',
         500,
-        'nenhum_provedor',
+        'nenhum_provedor'
       );
     },
   };
 }
-
-const provedorComFallback: ModeloProvider = {
-  nome: 'gemini+anthropic',
-  get configurado() { return true; },
-
-  async conversar(pedido: PedidoModelo): Promise<RespostaModelo> {
-    try {
-      return await geminiProvider.conversar(pedido);
-    } catch (e) {
-      console.error(
-        '[NEXO AI] Gemini falhou, tentando Anthropic:',
-        e instanceof Error ? e.message : e,
-      );
-      return anthropicProvider.conversar(pedido);
-    }
-  },
-};
