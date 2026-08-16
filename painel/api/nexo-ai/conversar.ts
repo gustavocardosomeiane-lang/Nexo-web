@@ -144,8 +144,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const texto = resposta.texto || 'Não consegui formular uma resposta agora.';
 
-    /* ---- Persiste ---- */
-    await salvarTurno(db, conversaId, mensagem, texto);
+    /* ---- Persiste — fire-and-forget, não bloqueia a resposta ---- */
+    void salvarTurno(db, conversaId, mensagem, texto);
 
     return res.status(200).json({
       ok: true,
@@ -192,9 +192,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       return res.status(e.status >= 400 && e.status < 600 ? e.status : 500).json({
         ok: false,
-        erro: 'O modelo de IA não conseguiu responder. Tente novamente em instantes.',
+        erro: msg,
         codigo: e.codigo ?? 'modelo_erro',
-        detalhe: msg,
       });
     }
 

@@ -90,6 +90,7 @@ export function useNexoAI(): UseNexoAI {
           setErro(motivo);
           setEstado('error');
           setTimeout(() => setEstado((s) => (s === 'error' ? 'idle' : s)), 60);
+          setTimeout(() => setErro(null), 8000);
         },
       });
     },
@@ -133,8 +134,8 @@ export function useNexoAI(): UseNexoAI {
         console.error('[NEXO] Erro em conversar:', e instanceof Error ? e.message : String(e));
         setErro(e instanceof Error ? e.message : 'A NEXO AI encontrou um problema.');
         setEstado('error');
-        // Volta para idle sozinho: 'error' só transita para 'idle'.
         setTimeout(() => setEstado((s) => (s === 'error' ? 'idle' : s)), 60);
+        setTimeout(() => setErro(null), 8000);
       } finally {
         processando.current = false;
       }

@@ -67,13 +67,18 @@ export function NexoAI() {
           </div>
         )}
 
-        {ai.mensagens.some((m) => m.papel === 'assistant') && (
+        {(ai.mensagens.some((m) => m.papel === 'assistant') || ai.parcialEscuta) && (
           <div className="nexo-ai-conversa" aria-live="polite">
             {ai.mensagens.filter((m) => m.papel === 'assistant').map((m) => (
               <div key={m.id} className="nexo-ai-bolha de-assistant">
                 {m.conteudo}
               </div>
             ))}
+            {ai.parcialEscuta && (
+              <div className="nexo-ai-bolha parcial" aria-live="off">
+                {ai.parcialEscuta}
+              </div>
+            )}
             <div ref={fimRef} />
           </div>
         )}
