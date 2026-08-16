@@ -37,6 +37,9 @@ $RECYCLE.BIN/
 *.log
 npm-debug.log*
 
+# Arquivo de debug exportado acidentalmente
+regex.txt
+
 # Vinculo local com a Vercel: contem VERCEL_OIDC_TOKEN.
 .vercel
 

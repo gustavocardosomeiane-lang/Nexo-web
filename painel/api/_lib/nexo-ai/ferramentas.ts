@@ -20,7 +20,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { FerramentaModelo } from './modelo';
+import type { FerramentaModelo } from './modelo.js';
 import { redigirSegredos } from '../../../shared/regras-nexo-ai.js';
 
 export interface ContextoFerramenta {
@@ -33,7 +33,7 @@ interface Ferramenta {
   executar: (args: Record<string, unknown>, ctx: ContextoFerramenta) => Promise<unknown>;
 }
 
-const semArgs = { type: 'object', properties: {}, additionalProperties: false } as const;
+const semArgs = { type: 'object', properties: {} } as const;
 
 /** Conta linhas de uma tabela por um filtro de status, em uma ida ao banco. */
 async function contarPorStatus(

@@ -218,12 +218,12 @@ interface Perfil {
  * criatura; ela só respira diferente.
  */
 const PERFIL: Record<EstadoNexoAI, Perfil> = {
-  idle: { ritmo: 0.55, luz: 0.82, pulso: 0.05, tom: -0.04 },
-  listening: { ritmo: 0.85, luz: 1.0, pulso: 0.1, tom: 0.02 },
-  thinking: { ritmo: 1.45, luz: 1.08, pulso: 0.14, tom: 0.06 },
-  responding: { ritmo: 1.1, luz: 1.12, pulso: 0.1, tom: 0.08 },
-  speaking: { ritmo: 1.2, luz: 1.15, pulso: 0.16, tom: 0.1 },
-  error: { ritmo: 0.4, luz: 0.62, pulso: 0.03, tom: -0.16 },
+  idle: { ritmo: 0.68, luz: 0.82, pulso: 0.06, tom: -0.04 },
+  listening: { ritmo: 1.0, luz: 1.0, pulso: 0.12, tom: 0.02 },
+  thinking: { ritmo: 1.7, luz: 1.08, pulso: 0.16, tom: 0.06 },
+  responding: { ritmo: 1.3, luz: 1.12, pulso: 0.12, tom: 0.08 },
+  speaking: { ritmo: 1.4, luz: 1.15, pulso: 0.18, tom: 0.1 },
+  error: { ritmo: 0.48, luz: 0.62, pulso: 0.04, tom: -0.16 },
 };
 
 /* ==========================================================================

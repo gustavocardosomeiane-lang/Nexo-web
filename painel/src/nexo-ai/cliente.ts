@@ -48,6 +48,12 @@ async function chamar<T>(caminho: string, init?: RequestInit): Promise<T> {
   if (resposta.status === 401) {
     throw new Error('Sua sessão expirou. Entre novamente para falar com a NEXO AI.');
   }
+  if (resposta.status === 429) {
+    throw new Error(
+      (corpo?.erro as string) ??
+        'A NEXO AI está recebendo muitas requisições. Aguarde alguns segundos e tente novamente.',
+    );
+  }
   if (resposta.status === 503) {
     throw new Error(
       (corpo?.erro as string) ??

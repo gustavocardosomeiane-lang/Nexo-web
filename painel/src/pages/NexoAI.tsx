@@ -9,7 +9,7 @@
  * Identidade da NEXO WEB: preto + vermelho, contida em `.nexo-ai`.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { Aviso } from '@/components/ui/primitives';
 import { Icon } from '@/components/ui/Icon';
 import { useNexoAI } from '@/nexo-ai/useNexoAI';
@@ -18,11 +18,6 @@ import { Orbe } from '@/nexo-ai/Orbe';
 export function NexoAI() {
   const ai = useNexoAI();
   const [texto, setTexto] = useState('');
-  const fimRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    fimRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [ai.mensagens, ai.parcialEscuta, ai.estado]);
 
   const submeter = () => {
     const t = texto.trim();
@@ -66,18 +61,6 @@ export function NexoAI() {
             <Aviso tom="erro">{ai.erro}</Aviso>
           </div>
         )}
-
-        {(ai.mensagens.length > 0 || ai.parcialEscuta) && (
-          <div className="nexo-ai-conversa" aria-live="polite">
-            {ai.mensagens.map((m) => (
-              <div key={m.id} className={`nexo-ai-bolha de-${m.papel}`}>
-                {m.conteudo}
-              </div>
-            ))}
-            {ai.parcialEscuta && <div className="nexo-ai-bolha parcial">{ai.parcialEscuta}</div>}
-            <div ref={fimRef} />
-          </div>
-        )}
       </div>
 
       <div className="nexo-ai-compositor">
@@ -112,7 +95,7 @@ export function NexoAI() {
           type="button"
           className="nexo-ai-btn enviar"
           onClick={submeter}
-          disabled={!texto.trim() || ai.estado === 'thinking'}
+          disabled={!texto.trim() || ai.estado === 'thinking' || ai.estado === 'responding' || ai.estado === 'speaking'}
           title="Enviar"
           aria-label="Enviar"
         >

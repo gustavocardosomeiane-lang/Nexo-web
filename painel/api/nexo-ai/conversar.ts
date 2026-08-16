@@ -42,6 +42,12 @@ import { podePorPapel } from '../_lib/nexo-ai/permissao.js';
 
 const LIMITE_MENSAGEM = 4000;
 
+const REGEX_DADOS = /\b(lead|cliente|vend[ae]|pag[ae]|projeto|campanha|conversa|m[eé]tric|resumo|quant[ao]s?|total|relat[oó]rio|receita|fatur|negócio|resultado|número|dado)\b/i;
+
+function precisaFerramentas(msg: string): boolean {
+  return REGEX_DADOS.test(msg);
+}
+
 interface Entrada {
   conversa_id?: string;
   mensagem?: string;
@@ -75,7 +81,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!modelo.configurado) {
     return res.status(503).json({
       ok: false,
-      erro: 'NEXO AI ainda não configurada: falta NEXO_AI_API_KEY no servidor.',
+      erro: 'NEXO AI ainda não configurada: falta GEMINI_API_KEY ou NEXO_AI_API_KEY no servidor.',
       codigo: 'sem_credencial',
     });
   }
@@ -115,30 +121,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       podePorPapel(usuario.papel, mod),
     );
 
-    /* ---- Rodada 1 ---- */
+    /* ---- Rodada 1: oferece ferramentas só quando a mensagem pede dados ---- */
+    const ferramentasR1 = precisaFerramentas(mensagem) ? definicoesDe(permitidas) : [];
     let resposta = await modelo.conversar({
       sistema,
       mensagens,
-      ferramentas: definicoesDe(permitidas),
+      ferramentas: ferramentasR1,
       maxTokensSaida: 1024,
     });
 
     /* ---- Rodada 2: só se o modelo pediu ferramenta. Uma vez, sem loop. ---- */
     if (resposta.chamadas.length > 0) {
+      const chamadasRound1 = resposta.chamadas;
       const resultados = await Promise.all(
-        resposta.chamadas.map(async (c) => ({
+        chamadasRound1.map(async (c) => ({
           id: c.id,
           conteudo: await executarFerramenta(c.nome, c.argumentos, { db, usuarioId }, permitidas),
         })),
       );
 
-      // O histórico da 2ª rodada precisa conter o turno de tool_use do assistente.
       resposta = await modelo.conversar({
         sistema,
-        mensagens: [
-          ...mensagens,
-          { papel: 'assistant', conteudo: resposta.texto || '(consultando dados)' },
-        ],
+        mensagens,
+        chamadasAnteriores: chamadasRound1,
         resultados,
         maxTokensSaida: 1024,
       });
@@ -146,8 +151,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const texto = resposta.texto || 'Não consegui formular uma resposta agora.';
 
-    /* ---- Persiste ---- */
-    await salvarTurno(db, conversaId, mensagem, texto);
+    /* ---- Persiste — fire-and-forget, não bloqueia a resposta ---- */
+    void salvarTurno(db, conversaId, mensagem, texto);
 
     return res.status(200).json({
       ok: true,
@@ -159,10 +164,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (e instanceof NaoAutenticado) return responderNaoAutenticado(res, e);
 
     const msg = e instanceof Error ? e.message : String(e);
-    console.error('[nexo-ai] erro:', msg);
+    const httpStatus = e instanceof ErroModelo ? e.status : 500;
+    console.error('[nexo-ai] erro:', { status: httpStatus, codigo: e instanceof ErroModelo ? e.codigo : undefined, msg });
 
     if (e instanceof ErroModelo) {
-      const billingKeywords = ['credit balance', 'billing', 'payment required', 'quota'];
+      // 429 rate limit — temporário, não é falha de configuração.
+      if (e.status === 429 || e.codigo === 'quota') {
+        return res.status(429).json({
+          ok: false,
+          erro: 'A NEXO AI está recebendo muitas requisições no momento. Aguarde alguns segundos e tente novamente.',
+          codigo: 'rate_limit',
+        });
+      }
+
+      // 401 / 403 — problema de autenticação com o modelo.
+      if (e.status === 401 || e.status === 403) {
+        return res.status(502).json({
+          ok: false,
+          erro: 'Problema de autenticação com a API do modelo. Avise o administrador.',
+          codigo: 'modelo_auth',
+        });
+      }
+
+      // Billing real: cobrança ou crédito esgotado (não é rate limit).
+      const billingKeywords = ['credit balance', 'billing', 'payment required'];
       const isBilling = billingKeywords.some((k) => msg.toLowerCase().includes(k));
       if (isBilling) {
         return res.status(502).json({
@@ -171,9 +196,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           codigo: 'modelo_billing',
         });
       }
+
       return res.status(e.status >= 400 && e.status < 600 ? e.status : 500).json({
         ok: false,
-        erro: 'O modelo de IA não conseguiu responder. Tente novamente em instantes.',
+        erro: msg,
         codigo: e.codigo ?? 'modelo_erro',
       });
     }
@@ -217,7 +243,7 @@ async function carregarHistorico(
     .select('papel, conteudo, criado_em')
     .eq('conversa_id', conversaId)
     .order('criado_em', { ascending: true })
-    .limit(40);
+    .limit(10);
   return (data ?? []) as MensagemChat[];
 }
 
@@ -229,7 +255,7 @@ async function carregarMemorias(
     .from('ai_memories')
     .select('id, tipo, conteudo, chaves, relevancia, usuario_id')
     .or(`usuario_id.eq.${usuarioId},usuario_id.is.null`)
-    .limit(200);
+    .limit(30);
   return (data ?? []) as Memoria[];
 }
 

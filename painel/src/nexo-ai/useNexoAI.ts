@@ -49,6 +49,7 @@ export function useNexoAI(): UseNexoAI {
   const [parcialEscuta, setParcialEscuta] = useState('');
 
   const conversaId = useRef<string | undefined>(undefined);
+  const processando = useRef(false);
   const voz = useRef<ProvedorVoz | null>(null);
   const vozLigadaRef = useRef(vozLigada);
   vozLigadaRef.current = vozLigada;
@@ -73,6 +74,7 @@ export function useNexoAI(): UseNexoAI {
     (texto: string) => {
       const v = voz.current;
       if (!v || !vozLigadaRef.current || !v.podeFalar) {
+        processando.current = false;
         setEstado('idle');
         return;
       }
@@ -80,12 +82,18 @@ export function useNexoAI(): UseNexoAI {
       v.falar(texto, {
         aoNivel: setNivelVoz,
         aoTerminar: () => {
+          processando.current = false;
           setNivelVoz(0);
           setEstado('idle');
         },
-        aoErro: () => {
+        aoErro: (motivo) => {
+          processando.current = false;
+          console.error('[NEXO] Erro TTS:', motivo);
           setNivelVoz(0);
-          setEstado('idle');
+          setErro(motivo);
+          setEstado('error');
+          setTimeout(() => setEstado((s) => (s === 'error' ? 'idle' : s)), 60);
+          setTimeout(() => setErro(null), 8000);
         },
       });
     },
@@ -96,6 +104,10 @@ export function useNexoAI(): UseNexoAI {
     async (texto: string) => {
       const limpo = texto.trim();
       if (!limpo) return;
+      if (processando.current) return; // Evita chamadas concorrentes
+      processando.current = true;
+
+      const _t0 = Date.now();
 
       voz.current?.pararFala();
       setParcialEscuta('');
@@ -105,21 +117,29 @@ export function useNexoAI(): UseNexoAI {
         { id: idLocal(), papel: 'user', conteudo: limpo, em: new Date().toISOString() },
       ]);
       setEstado('thinking');
+      const _t1 = Date.now();
+      console.debug('[TIMING] T1 request IA:', _t1 - _t0, 'ms');
 
       try {
         const r = await conversar(limpo, conversaId.current);
+        const _t23 = Date.now();
+        console.debug('[TIMING] T2/T3 resposta IA:', _t23 - _t0, 'ms total |', _t23 - _t1, 'ms de IA | chars:', r.resposta.length, '| tokens:', JSON.stringify(r.tokens));
         conversaId.current = r.conversaId;
         setMensagens((m) => [
           ...m,
           { id: idLocal(), papel: 'assistant', conteudo: r.resposta, em: new Date().toISOString() },
         ]);
         setEstado('responding');
+        const _t4 = Date.now();
+        console.debug('[TIMING] T4 TTS começa:', _t4 - _t0, 'ms');
         falar(r.resposta);
       } catch (e) {
+        processando.current = false;
+        console.error('[NEXO] Erro em conversar:', e instanceof Error ? e.message : String(e));
         setErro(e instanceof Error ? e.message : 'A NEXO AI encontrou um problema.');
         setEstado('error');
-        // Volta para idle sozinho: 'error' só transita para 'idle'.
         setTimeout(() => setEstado((s) => (s === 'error' ? 'idle' : s)), 60);
+        setTimeout(() => setErro(null), 8000);
       }
     },
     [falar],
@@ -131,9 +151,10 @@ export function useNexoAI(): UseNexoAI {
       setErro('Este navegador não reconhece voz. Use o teclado.');
       return;
     }
+    if (estado === 'thinking' || estado === 'speaking' || estado === 'responding') return;
     if (estado === 'listening') {
-      v.pararEscuta();
-      setEstado('idle');
+      // finalizarEscuta chama rec.stop() → Chrome comita isFinal → aoFinal → enviar
+      v.finalizarEscuta();
       return;
     }
     v.pararFala();
@@ -142,27 +163,37 @@ export function useNexoAI(): UseNexoAI {
     irPara('listening');
     v.ouvir({
       aoParcial: setParcialEscuta,
+      aoNivel: setNivelVoz,
       aoFinal: (t) => {
         setParcialEscuta('');
+        setNivelVoz(0);
         void enviar(t);
       },
       aoErro: (motivo) => {
+        setNivelVoz(0);
         setErro(motivo);
         setEstado((s) => (s === 'listening' ? 'idle' : s));
       },
-      aoFim: () => setEstado((s) => (s === 'listening' ? 'idle' : s)),
+      aoFim: () => {
+        setNivelVoz(0);
+        setEstado((s) => (s === 'listening' ? 'idle' : s));
+      },
     });
   }, [estado, enviar, irPara]);
 
   const alternarVoz = useCallback(() => {
     setVozLigada((v) => {
-      if (v) voz.current?.pararFala();
+      if (v) {
+        voz.current?.pararFala();
+        processando.current = false;
+      }
       return !v;
     });
   }, []);
 
   const silenciar = useCallback(() => {
     voz.current?.pararFala();
+    processando.current = false;
     setNivelVoz(0);
     setEstado((s) => (s === 'speaking' ? 'idle' : s));
   }, []);
@@ -170,6 +201,7 @@ export function useNexoAI(): UseNexoAI {
   const limpar = useCallback(() => {
     voz.current?.pararFala();
     voz.current?.pararEscuta();
+    processando.current = false;
     conversaId.current = undefined;
     setMensagens([]);
     setErro(null);
