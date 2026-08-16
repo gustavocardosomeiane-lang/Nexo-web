@@ -56,7 +56,7 @@ class VozGemini implements ProvedorVoz {
   private contextoAudio: AudioContext | null = null;
   private fonteAtual: AudioBufferSourceNode | null = null;
   private falando = false;
-  private faixaMicrofone: MediaStream | null = null;
+  private temporizadorSilencio: ReturnType<typeof setTimeout> | null = null;
 
   get podeFalar(): boolean {
     return typeof window !== 'undefined' && ('AudioContext' in window || 'webkitAudioContext' in (window as unknown as Record<string, unknown>));
@@ -157,73 +157,64 @@ class VozGemini implements ProvedorVoz {
   }
 
   private async iniciarEscuta(Construtor: ConstrutorReconhecimento, cb: AoOuvir): Promise<void> {
-    try {
-      if (typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
-        this.faixaMicrofone?.getTracks().forEach((faixa) => faixa.stop());
-        this.faixaMicrofone = await navigator.mediaDevices.getUserMedia({ audio: true });
-      }
-    } catch (e) {
-      const nome = e instanceof DOMException ? e.name : '';
-      const mensagens: Record<string, string> = {
-        NotAllowedError: 'Permissão de microfone negada. Libere o microfone no navegador e tente novamente.',
-        PermissionDeniedError: 'Permissão de microfone negada. Libere o microfone no navegador e tente novamente.',
-        NotFoundError: 'Nenhum microfone foi encontrado neste dispositivo.',
-        NotReadableError: 'O microfone está sendo usado por outro aplicativo.',
-      };
-      cb.aoErro?.(mensagens[nome] ?? 'Não foi possível acessar o microfone.');
-      cb.aoFim?.();
-      return;
-    }
-
     const rec = new Construtor();
     rec.lang = 'pt-BR';
+    // O próprio SpeechRecognition controla o microfone. Não abrimos getUserMedia
+    // em paralelo, pois isso pode manter a faixa ocupada e impedir o reconhecimento
+    // de detectar o fim da fala, especialmente no Chrome mobile.
     rec.continuous = false;
     rec.interimResults = true;
+
     let acumulado = '';
     let parcialAtual = '';
     let houveErro = false;
     let finalizado = false;
-    let temporizadorSilencio: ReturnType<typeof setTimeout> | null = null;
 
-    const liberarMicrofone = () => {
-      this.faixaMicrofone?.getTracks().forEach((faixa) => faixa.stop());
-      this.faixaMicrofone = null;
+    const cancelarTemporizador = () => {
+      if (this.temporizadorSilencio) {
+        clearTimeout(this.temporizadorSilencio);
+        this.temporizadorSilencio = null;
+      }
     };
 
     const concluir = () => {
-      if (temporizadorSilencio) { clearTimeout(temporizadorSilencio); temporizadorSilencio = null; }
+      cancelarTemporizador();
       if (finalizado) return;
       finalizado = true;
       const texto = acumulado.trim() || parcialAtual.trim();
       try { rec.stop(); } catch {}
-      liberarMicrofone();
+      this.reconhecimento = null;
       if (texto && !houveErro) cb.aoFinal?.(texto);
     };
 
     const programarEnvio = () => {
-      if (temporizadorSilencio) clearTimeout(temporizadorSilencio);
-      temporizadorSilencio = setTimeout(concluir, 900);
+      cancelarTemporizador();
+      // Envia automaticamente após uma pausa curta, sem botão de envio.
+      this.temporizadorSilencio = setTimeout(concluir, 650);
     };
 
     rec.onresult = (e) => {
       let parcial = '';
       let novosFinais = '';
-      const inicio = Math.max(0, e.results.length - 3);
-      for (let i = inicio; i < e.results.length; i++) {
+      for (let i = 0; i < e.results.length; i++) {
         const r = e.results[i]!;
         const txt = r[0]?.transcript ?? '';
         if (r.isFinal) novosFinais += `${txt} `;
         else parcial += `${txt} `;
       }
-      if (novosFinais.trim()) acumulado = `${acumulado} ${novosFinais.trim()}`.trim();
+      if (novosFinais.trim()) acumulado = novosFinais.trim();
       parcialAtual = parcial.trim();
       const visivel = `${acumulado} ${parcialAtual}`.trim();
-      if (visivel) { cb.aoParcial?.(visivel); programarEnvio(); }
+      if (visivel) {
+        cb.aoParcial?.(visivel);
+        programarEnvio();
+      }
     };
 
     rec.onerror = (e) => {
       if (e.error === 'no-speech') return;
       houveErro = true;
+      cancelarTemporizador();
       const erros: Record<string, string> = {
         'not-allowed': 'Permissão de microfone negada. Libere o microfone no navegador e tente novamente.',
         'service-not-allowed': 'O serviço de reconhecimento de voz não está disponível neste navegador.',
@@ -236,9 +227,11 @@ class VozGemini implements ProvedorVoz {
     };
 
     rec.onend = () => {
+      cancelarTemporizador();
       this.reconhecimento = null;
+      // Alguns navegadores encerram o reconhecimento automaticamente após o silêncio.
+      // Nesse caso, o texto capturado deve ser enviado imediatamente.
       if (!finalizado && !houveErro && (acumulado.trim() || parcialAtual.trim())) concluir();
-      else liberarMicrofone();
       cb.aoFim?.();
     };
 
@@ -247,19 +240,25 @@ class VozGemini implements ProvedorVoz {
       rec.start();
     } catch {
       this.reconhecimento = null;
-      liberarMicrofone();
+      cancelarTemporizador();
       cb.aoErro?.('Não foi possível iniciar a escuta. Tente clicar novamente no microfone.');
       cb.aoFim?.();
     }
   }
 
   pararEscuta(): void {
+    cancelarSilencio(this);
     if (this.reconhecimento) {
       try { this.reconhecimento.stop(); } catch { try { this.reconhecimento.abort(); } catch {} }
       this.reconhecimento = null;
     }
-    this.faixaMicrofone?.getTracks().forEach((faixa) => faixa.stop());
-    this.faixaMicrofone = null;
+  }
+}
+
+function cancelarSilencio(instancia: VozGemini): void {
+  if (instancia['temporizadorSilencio']) {
+    clearTimeout(instancia['temporizadorSilencio']);
+    instancia['temporizadorSilencio'] = null;
   }
 }
 
