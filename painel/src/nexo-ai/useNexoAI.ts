@@ -1,14 +1,8 @@
 /**
- * `useNexoAI` — a máquina de estados da assistente, do lado do navegador.
- *
- * Junta quatro coisas que precisam andar em sincronia: as mensagens da sessão,
- * o estado visual (para o orbe), a chamada à API e a voz. As telas não tocam
- * em nenhuma dessas peças direto — pedem a este hook.
- *
- * A transição de estado passa por `podeTransitar` (regra pura, testada): a
- * interface nunca cai num estado impossível, tipo "falando" logo após "erro".
+ * Orquestração da NEXO AI no navegador.
+ * As mensagens continuam no estado para memória/contexto, mas a tela pode
+ * escolher não renderizá-las.
  */
-
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { podeTransitar, type EstadoNexoAI } from '../../shared/regras-nexo-ai';
 import { conversar } from './cliente';
@@ -37,8 +31,7 @@ export interface UseNexoAI {
   limpar: () => void;
 }
 
-const idLocal = () =>
-  `m_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+const idLocal = () => `m_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 
 export function useNexoAI(): UseNexoAI {
   const [estado, setEstado] = useState<EstadoNexoAI>('idle');
@@ -53,82 +46,69 @@ export function useNexoAI(): UseNexoAI {
   const vozLigadaRef = useRef(vozLigada);
   vozLigadaRef.current = vozLigada;
 
-  if (voz.current === null && typeof window !== 'undefined') {
-    voz.current = criarProvedorVoz();
-  }
+  if (voz.current === null && typeof window !== 'undefined') voz.current = criarProvedorVoz();
 
-  /** Transição guardada: só muda se a regra pura permitir. */
   const irPara = useCallback((proximo: EstadoNexoAI) => {
     setEstado((atual) => (podeTransitar(atual, proximo) ? proximo : atual));
   }, []);
 
-  useEffect(() => {
-    return () => {
-      voz.current?.pararFala();
-      voz.current?.pararEscuta();
-    };
+  useEffect(() => () => {
+    voz.current?.pararFala();
+    voz.current?.pararEscuta();
   }, []);
 
-  const falar = useCallback(
-    (texto: string) => {
-      const v = voz.current;
-      if (!v || !vozLigadaRef.current || !v.podeFalar) {
+  const falar = useCallback((texto: string) => {
+    const v = voz.current;
+    if (!v || !vozLigadaRef.current || !v.podeFalar) {
+      setEstado('idle');
+      return;
+    }
+    irPara('speaking');
+    void v.falar(texto, {
+      aoNivel: setNivelVoz,
+      aoTerminar: () => {
+        setNivelVoz(0);
         setEstado('idle');
-        return;
-      }
-      irPara('speaking');
-      v.falar(texto, {
-        aoNivel: setNivelVoz,
-        aoTerminar: () => {
-          setNivelVoz(0);
-          setEstado('idle');
-        },
-        aoErro: () => {
-          setNivelVoz(0);
-          setEstado('idle');
-        },
-      });
-    },
-    [irPara],
-  );
+      },
+      aoErro: (motivo) => {
+        setNivelVoz(0);
+        setErro(motivo);
+        setEstado('idle');
+      },
+    });
+  }, [irPara]);
 
-  const enviar = useCallback(
-    async (texto: string) => {
-      const limpo = texto.trim();
-      if (!limpo) return;
+  const enviar = useCallback(async (texto: string) => {
+    const limpo = texto.trim();
+    if (!limpo || estado === 'thinking') return;
 
-      voz.current?.pararFala();
-      setParcialEscuta('');
-      setErro(null);
-      setMensagens((m) => [
-        ...m,
-        { id: idLocal(), papel: 'user', conteudo: limpo, em: new Date().toISOString() },
-      ]);
-      setEstado('thinking');
+    const v = voz.current;
+    // O resume() precisa acontecer durante a interação do usuário para que o
+    // navegador aceite tocar a resposta de voz quando ela chegar.
+    v?.prepararFala();
+    v?.pararFala();
+    setParcialEscuta('');
+    setErro(null);
+    setMensagens((m) => [...m, { id: idLocal(), papel: 'user', conteudo: limpo, em: new Date().toISOString() }]);
+    setEstado('thinking');
 
-      try {
-        const r = await conversar(limpo, conversaId.current);
-        conversaId.current = r.conversaId;
-        setMensagens((m) => [
-          ...m,
-          { id: idLocal(), papel: 'assistant', conteudo: r.resposta, em: new Date().toISOString() },
-        ]);
-        setEstado('responding');
-        falar(r.resposta);
-      } catch (e) {
-        setErro(e instanceof Error ? e.message : 'A NEXO AI encontrou um problema.');
-        setEstado('error');
-        // Volta para idle sozinho: 'error' só transita para 'idle'.
-        setTimeout(() => setEstado((s) => (s === 'error' ? 'idle' : s)), 60);
-      }
-    },
-    [falar],
-  );
+    try {
+      const r = await conversar(limpo, conversaId.current);
+      conversaId.current = r.conversaId;
+      setMensagens((m) => [...m, { id: idLocal(), papel: 'assistant', conteudo: r.resposta, em: new Date().toISOString() }]);
+      setEstado('responding');
+      falar(r.resposta);
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : 'A NEXO AI encontrou um problema.');
+      setEstado('error');
+      setTimeout(() => setEstado((s) => (s === 'error' ? 'idle' : s)), 60);
+    }
+  }, [estado, falar]);
 
   const alternarEscuta = useCallback(() => {
     const v = voz.current;
     if (!v?.podeOuvir) {
-      setErro('Este navegador não reconhece voz. Use o teclado.');
+      setErro('Seu navegador não oferece reconhecimento de voz.');
       return;
     }
     if (estado === 'listening') {
@@ -136,6 +116,8 @@ export function useNexoAI(): UseNexoAI {
       setEstado('idle');
       return;
     }
+
+    v.prepararFala();
     v.pararFala();
     setErro(null);
     setParcialEscuta('');
