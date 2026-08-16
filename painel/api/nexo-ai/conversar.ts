@@ -62,7 +62,7 @@ function detectarFerramentas(mensagem: string, permitidas: string[]): string[] {
   const t = mensagem
     .toLowerCase()
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, ' ');
+    .replace(new RegExp('[\\u0300-\\u036f]', 'g'), ' ');
 
   const termos: Record<string, string[]> = {
     consultar_leads: ['lead', 'leads', 'prospect', 'prospects', 'qualificado', 'qualificados', 'funil'],
