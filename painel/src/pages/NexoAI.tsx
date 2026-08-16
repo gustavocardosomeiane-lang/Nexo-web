@@ -1,15 +1,5 @@
-/**
- * NEXO AI — a aba da assistente interna.
- *
- * Sem título, sem subtítulo, sem texto de marca: a presença da NEXO AI é
- * comunicada só pelo ORBE, que é o elemento central. Esta tela é apresentação;
- * a inteligência mora no servidor (`api/nexo-ai/*`) e a orquestração em
- * `useNexoAI` — nada disso foi tocado.
- *
- * Identidade da NEXO WEB: preto + vermelho, contida em `.nexo-ai`.
- */
-
-import { useEffect, useRef, useState } from 'react';
+/** NEXO AI — interface limpa: o orbe é o foco e a conversa não é exibida. */
+import { useState } from 'react';
 import { Aviso } from '@/components/ui/primitives';
 import { Icon } from '@/components/ui/Icon';
 import { useNexoAI } from '@/nexo-ai/useNexoAI';
@@ -18,11 +8,6 @@ import { Orbe } from '@/nexo-ai/Orbe';
 export function NexoAI() {
   const ai = useNexoAI();
   const [texto, setTexto] = useState('');
-  const fimRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    fimRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [ai.mensagens, ai.parcialEscuta, ai.estado]);
 
   const submeter = () => {
     const t = texto.trim();
@@ -34,7 +19,6 @@ export function NexoAI() {
   return (
     <div className="nexo-ai">
       <div className="nexo-ai-palco">
-        {/* Controles funcionais, mínimos, no canto — sem texto de identidade. */}
         <div className="nexo-ai-controles">
           <button
             type="button"
@@ -46,17 +30,6 @@ export function NexoAI() {
           >
             <Icon nome={ai.vozLigada ? 'som' : 'som-off'} tamanho={20} />
           </button>
-          {ai.mensagens.length > 0 && (
-            <button
-              type="button"
-              className="nexo-ai-btn"
-              onClick={ai.limpar}
-              title="Limpar a conversa"
-              aria-label="Limpar a conversa"
-            >
-              <Icon nome="lixeira" tamanho={18} />
-            </button>
-          )}
         </div>
 
         <Orbe estado={ai.estado} nivel={ai.nivelVoz} tamanho={340} />
@@ -64,18 +37,6 @@ export function NexoAI() {
         {ai.erro && (
           <div style={{ maxWidth: 460, width: '100%' }}>
             <Aviso tom="erro">{ai.erro}</Aviso>
-          </div>
-        )}
-
-        {(ai.mensagens.length > 0 || ai.parcialEscuta) && (
-          <div className="nexo-ai-conversa" aria-live="polite">
-            {ai.mensagens.map((m) => (
-              <div key={m.id} className={`nexo-ai-bolha de-${m.papel}`}>
-                {m.conteudo}
-              </div>
-            ))}
-            {ai.parcialEscuta && <div className="nexo-ai-bolha parcial">{ai.parcialEscuta}</div>}
-            <div ref={fimRef} />
           </div>
         )}
       </div>
@@ -90,23 +51,21 @@ export function NexoAI() {
               submeter();
             }
           }}
-          placeholder={ai.podeOuvir ? 'Escreva ou toque no microfone…' : 'Escreva sua mensagem…'}
+          placeholder="Escreva ou toque no microfone…"
           rows={1}
           aria-label="Mensagem para a NEXO AI"
         />
 
-        {ai.podeOuvir && (
-          <button
-            type="button"
-            className={`nexo-ai-btn ${ai.estado === 'listening' ? 'ativo escutando' : ''}`}
-            onClick={ai.alternarEscuta}
-            title={ai.estado === 'listening' ? 'Parar de ouvir' : 'Falar'}
-            aria-label={ai.estado === 'listening' ? 'Parar de ouvir' : 'Falar'}
-            aria-pressed={ai.estado === 'listening'}
-          >
-            <Icon nome="microfone" tamanho={20} />
-          </button>
-        )}
+        <button
+          type="button"
+          className={`nexo-ai-btn ${ai.estado === 'listening' ? 'ativo escutando' : ''}`}
+          onClick={ai.alternarEscuta}
+          title={ai.estado === 'listening' ? 'Parar de ouvir' : 'Falar com a NEXO'}
+          aria-label={ai.estado === 'listening' ? 'Parar de ouvir' : 'Falar com a NEXO'}
+          aria-pressed={ai.estado === 'listening'}
+        >
+          <Icon nome="microfone" tamanho={20} />
+        </button>
 
         <button
           type="button"
