@@ -95,7 +95,7 @@ export function NexoAI() {
           type="button"
           className="nexo-ai-btn enviar"
           onClick={submeter}
-          disabled={!texto.trim() || ai.estado === 'thinking'}
+          disabled={!texto.trim() || ai.estado === 'thinking' || ai.estado === 'responding' || ai.estado === 'speaking'}
           title="Enviar"
           aria-label="Enviar"
         >

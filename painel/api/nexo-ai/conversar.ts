@@ -236,7 +236,7 @@ async function carregarHistorico(
     .select('papel, conteudo, criado_em')
     .eq('conversa_id', conversaId)
     .order('criado_em', { ascending: true })
-    .limit(40);
+    .limit(10);
   return (data ?? []) as MensagemChat[];
 }
 
@@ -248,7 +248,7 @@ async function carregarMemorias(
     .from('ai_memories')
     .select('id, tipo, conteudo, chaves, relevancia, usuario_id')
     .or(`usuario_id.eq.${usuarioId},usuario_id.is.null`)
-    .limit(200);
+    .limit(30);
   return (data ?? []) as Memoria[];
 }
 

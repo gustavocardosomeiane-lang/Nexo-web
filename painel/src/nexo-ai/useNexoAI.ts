@@ -74,6 +74,7 @@ export function useNexoAI(): UseNexoAI {
     (texto: string) => {
       const v = voz.current;
       if (!v || !vozLigadaRef.current || !v.podeFalar) {
+        processando.current = false;
         setEstado('idle');
         return;
       }
@@ -81,10 +82,12 @@ export function useNexoAI(): UseNexoAI {
       v.falar(texto, {
         aoNivel: setNivelVoz,
         aoTerminar: () => {
+          processando.current = false;
           setNivelVoz(0);
           setEstado('idle');
         },
         aoErro: (motivo) => {
+          processando.current = false;
           console.error('[NEXO] Erro TTS:', motivo);
           setNivelVoz(0);
           setErro(motivo);
@@ -131,13 +134,12 @@ export function useNexoAI(): UseNexoAI {
         console.debug('[TIMING] T4 TTS começa:', _t4 - _t0, 'ms');
         falar(r.resposta);
       } catch (e) {
+        processando.current = false;
         console.error('[NEXO] Erro em conversar:', e instanceof Error ? e.message : String(e));
         setErro(e instanceof Error ? e.message : 'A NEXO AI encontrou um problema.');
         setEstado('error');
         setTimeout(() => setEstado((s) => (s === 'error' ? 'idle' : s)), 60);
         setTimeout(() => setErro(null), 8000);
-      } finally {
-        processando.current = false;
       }
     },
     [falar],
@@ -149,6 +151,7 @@ export function useNexoAI(): UseNexoAI {
       setErro('Este navegador não reconhece voz. Use o teclado.');
       return;
     }
+    if (estado === 'thinking' || estado === 'speaking' || estado === 'responding') return;
     if (estado === 'listening') {
       // finalizarEscuta chama rec.stop() → Chrome comita isFinal → aoFinal → enviar
       v.finalizarEscuta();
@@ -180,13 +183,17 @@ export function useNexoAI(): UseNexoAI {
 
   const alternarVoz = useCallback(() => {
     setVozLigada((v) => {
-      if (v) voz.current?.pararFala();
+      if (v) {
+        voz.current?.pararFala();
+        processando.current = false;
+      }
       return !v;
     });
   }, []);
 
   const silenciar = useCallback(() => {
     voz.current?.pararFala();
+    processando.current = false;
     setNivelVoz(0);
     setEstado((s) => (s === 'speaking' ? 'idle' : s));
   }, []);
@@ -194,6 +201,7 @@ export function useNexoAI(): UseNexoAI {
   const limpar = useCallback(() => {
     voz.current?.pararFala();
     voz.current?.pararEscuta();
+    processando.current = false;
     conversaId.current = undefined;
     setMensagens([]);
     setErro(null);

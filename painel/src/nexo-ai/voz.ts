@@ -432,6 +432,7 @@ class VozGemini implements ProvedorVoz {
     rec.continuous = false;
     rec.interimResults = true;
 
+    let finalChamado = false;
     rec.onresult = (e) => {
       let parcial = '';
       let finalizado = '';
@@ -442,7 +443,10 @@ class VozGemini implements ProvedorVoz {
         else parcial += txt;
       }
       if (parcial) cb.aoParcial?.(parcial);
-      if (finalizado) cb.aoFinal?.(finalizado.trim());
+      if (finalizado && !finalChamado) {
+        finalChamado = true;
+        cb.aoFinal?.(finalizado.trim());
+      }
     };
 
     rec.onerror = (e) => {
