@@ -106,6 +106,7 @@ class VozGemini implements ProvedorVoz {
   private micSource: MediaStreamAudioSourceNode | null = null;
   private micAnalyser: AnalyserNode | null = null;
   private micNivelTimer: ReturnType<typeof setInterval> | null = null;
+  private silenceTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Cache do token Supabase — evita round-trip repetido a cada chamada TTS
   private tokenCache: { value: string; expiresAt: number } | null = null;
@@ -133,6 +134,7 @@ class VozGemini implements ProvedorVoz {
   }
 
   private async tentarGemini(texto: string, cb: AoFalar): Promise<void> {
+    const _tts0 = Date.now();
     // Pré-aquece o AudioContext imediatamente — correrá em paralelo com a rede
     // para eliminar o atraso de criação/resume após o áudio chegar.
     const ctxPromise = this.obterCtxPronto();
@@ -157,6 +159,7 @@ class VozGemini implements ProvedorVoz {
     }
 
     if (this.cancelado) return;
+    console.debug('[TIMING] T5 resposta TTS:', Date.now() - _tts0, 'ms | status:', resp.status);
 
     if (!resp.ok) {
       // Erro da API (autenticação, modelo, configuração). NÃO usa fallback —
@@ -183,6 +186,7 @@ class VozGemini implements ProvedorVoz {
       // ter resolvido durante a chamada de rede, então a espera aqui é zero.
       const [raw, ctx] = await Promise.all([resp.arrayBuffer(), ctxPromise]);
       if (this.cancelado) return;
+      console.debug('[TIMING] T5b áudio+ctx prontos:', Date.now() - _tts0, 'ms | bytes:', raw.byteLength);
 
       const audioBuffer = await ctx.decodeAudioData(raw);
       if (this.cancelado) return;
@@ -207,6 +211,7 @@ class VozGemini implements ProvedorVoz {
       cb.aoIniciar?.();
       this.iniciarNivel(cb);
       source.start(0);
+      console.debug('[TIMING] T6 reprodução TTS:', Date.now() - _tts0, 'ms');
     } catch (e) {
       if (this.cancelado) return;
       const msg = e instanceof Error ? e.message : String(e);
@@ -321,8 +326,13 @@ class VozGemini implements ProvedorVoz {
   private async iniciarAnalyseMic(cb: AoOuvir): Promise<void> {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) return;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      // Se o reconhecimento já parou enquanto aguardávamos, libera o stream
+      // Sem processamento de áudio — echoCancellation/noiseSuppression/AGC
+      // interferem com o VAD interno do SpeechRecognition no Chrome,
+      // impedindo que o silêncio seja detectado e isFinal nunca dispara.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        video: false,
+      });
       if (!this.reconhecimento) {
         for (const track of stream.getTracks()) track.stop();
         return;
@@ -342,12 +352,36 @@ class VozGemini implements ProvedorVoz {
       this.micAnalyser = analyser;
 
       const buf = new Uint8Array(analyser.frequencyBinCount);
+      const LIMIAR_VOZ = 0.06;  // abaixo deste nível = silêncio
+      const SILENCIO_MS = 1500; // ms de silêncio após fala → forçar stop
+      let falou = false;
+
       this.micNivelTimer = setInterval(() => {
         if (!this.micAnalyser) return;
         this.micAnalyser.getByteTimeDomainData(buf);
         let soma = 0;
         for (const v of buf) soma += Math.abs(v - 128);
-        cb.aoNivel?.(Math.min(1, (soma / buf.length / 128) * 8));
+        const nivel = Math.min(1, (soma / buf.length / 128) * 8);
+        cb.aoNivel?.(nivel);
+
+        if (nivel > LIMIAR_VOZ) {
+          // Usuário está falando: cancela timer de silêncio se existir
+          falou = true;
+          if (this.silenceTimer !== null) {
+            clearTimeout(this.silenceTimer);
+            this.silenceTimer = null;
+          }
+        } else if (falou && this.silenceTimer === null) {
+          // Silêncio detectado após fala: agenda stop do SpeechRecognition.
+          // Quando rec.stop() é chamado explicitamente, o Chrome comita o
+          // resultado pendente como isFinal=true e dispara onend.
+          this.silenceTimer = setTimeout(() => {
+            this.silenceTimer = null;
+            if (this.reconhecimento) {
+              try { this.reconhecimento.stop(); } catch { /* ignore */ }
+            }
+          }, SILENCIO_MS);
+        }
       }, 60);
     } catch {
       // getUserMedia negado ou indisponível — amplitude visual não disponível,
@@ -356,6 +390,10 @@ class VozGemini implements ProvedorVoz {
   }
 
   private pararAnalyseMic(): void {
+    if (this.silenceTimer !== null) {
+      clearTimeout(this.silenceTimer);
+      this.silenceTimer = null;
+    }
     if (this.micNivelTimer) {
       clearInterval(this.micNivelTimer);
       this.micNivelTimer = null;

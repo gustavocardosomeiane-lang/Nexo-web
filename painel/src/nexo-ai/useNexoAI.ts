@@ -84,6 +84,7 @@ export function useNexoAI(): UseNexoAI {
           setEstado('idle');
         },
         aoErro: (motivo) => {
+          console.error('[NEXO] Erro TTS:', motivo);
           setNivelVoz(0);
           setErro(motivo);
           setEstado('error');
@@ -98,6 +99,7 @@ export function useNexoAI(): UseNexoAI {
     async (texto: string) => {
       const limpo = texto.trim();
       if (!limpo) return;
+      const _t0 = Date.now();
 
       voz.current?.pararFala();
       setParcialEscuta('');
@@ -107,17 +109,24 @@ export function useNexoAI(): UseNexoAI {
         { id: idLocal(), papel: 'user', conteudo: limpo, em: new Date().toISOString() },
       ]);
       setEstado('thinking');
+      const _t1 = Date.now();
+      console.debug('[TIMING] T1 request IA:', _t1 - _t0, 'ms');
 
       try {
         const r = await conversar(limpo, conversaId.current);
+        const _t23 = Date.now();
+        console.debug('[TIMING] T2/T3 resposta IA:', _t23 - _t0, 'ms total |', _t23 - _t1, 'ms de IA | chars:', r.resposta.length, '| tokens:', JSON.stringify(r.tokens));
         conversaId.current = r.conversaId;
         setMensagens((m) => [
           ...m,
           { id: idLocal(), papel: 'assistant', conteudo: r.resposta, em: new Date().toISOString() },
         ]);
         setEstado('responding');
+        const _t4 = Date.now();
+        console.debug('[TIMING] T4 TTS começa:', _t4 - _t0, 'ms');
         falar(r.resposta);
       } catch (e) {
+        console.error('[NEXO] Erro em conversar:', e instanceof Error ? e.message : String(e));
         setErro(e instanceof Error ? e.message : 'A NEXO AI encontrou um problema.');
         setEstado('error');
         // Volta para idle sozinho: 'error' só transita para 'idle'.
