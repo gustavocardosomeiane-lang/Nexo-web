@@ -13,7 +13,7 @@
  *                   ferramentas necessárias com a RLS do usuário.
  *   4. MODELO     — exatamente uma chamada, recebendo os dados reais como
  *                   contexto quando necessário.
- *   5. PERSISTE   — grava as duas mensagens na sessão.
+ *   5. PERSISTE  — grava as duas mensagens na sessão.
  *
  * SEGURANÇA: nenhuma consulta usa service_role. A IA só vê o que o usuário vê.
  * ESCOPO FASE 1: leitura + memória. Nada escreve em tabela de negócio, nada
@@ -164,7 +164,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const resposta = await modelo.conversar({
       sistema: sistemaComDados,
       mensagens,
-      maxTokensSaida: 1024,
+      maxTokensSaida: 512,
     });
 
     const texto = resposta.texto || 'Não consegui formular uma resposta agora.';
