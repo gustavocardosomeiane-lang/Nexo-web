@@ -9,10 +9,10 @@
  *   1. AUTENTICA  — valida o JWT, descobre quem é e monta um cliente com RLS.
  *   2. CONTEXTO   — persona + empresa + usuário + memórias relevantes +
  *                   histórico recortado, tudo sob orçamento de tokens.
- *   3. MODELO     — uma chamada. O modelo responde ou pede ferramenta.
- *   4. FERRAMENTA — se pediu, executa (leitura com a RLS do usuário) e devolve
- *                   ao modelo para concluir. NO MÁXIMO uma rodada de
- *                   ferramentas — sem loop, sem custo aberto.
+ *   3. DADOS      — quando a mensagem pede dados, consulta apenas as
+ *                   ferramentas necessárias com a RLS do usuário.
+ *   4. MODELO     — exatamente uma chamada, recebendo os dados reais como
+ *                   contexto quando necessário.
  *   5. PERSISTE   — grava as duas mensagens na sessão.
  *
  * SEGURANÇA: nenhuma consulta usa service_role. A IA só vê o que o usuário vê.
@@ -64,24 +64,27 @@ function detectarFerramentas(mensagem: string, permitidas: string[]): string[] {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, ' ');
 
-  const regras: Record<string, RegExp> = {
-    consultar_leads: /\b(leads?|prospects?|qualificados?|funil)\b/,
-    consultar_clientes: /\b(clientes?|carteira|customer)\b/,
-    consultar_vendas: /\b(vendas?|vendemos|fechamentos?|contratos?|faturamento)\b/,
-    consultar_pagamentos: /\b(pagamentos?|recebemos|recebido|receita|recebimento)\b/,
-    consultar_projetos: /\b(projetos?|entregas?|em andamento)\b/,
-    consultar_campanhas: /\b(campanhas?|prospeccao|prospecção)\b/,
-    consultar_conversas: /\b(conversas?|atendimentos?)\b/,
-    consultar_metricas: /\b(metricas?|métricas|resumo|como estamos|visao geral|visão geral|indicadores)\b/,
+  const termos: Record<string, string[]> = {
+    consultar_leads: ['lead', 'leads', 'prospect', 'prospects', 'qualificado', 'qualificados', 'funil'],
+    consultar_clientes: ['cliente', 'clientes', 'carteira', 'customer'],
+    consultar_vendas: ['venda', 'vendas', 'vendemos', 'fechamento', 'fechamentos', 'contrato', 'contratos', 'faturamento'],
+    consultar_pagamentos: ['pagamento', 'pagamentos', 'recebemos', 'recebido', 'receita', 'recebimento'],
+    consultar_projetos: ['projeto', 'projetos', 'entrega', 'entregas', 'em andamento'],
+    consultar_campanhas: ['campanha', 'campanhas', 'prospeccao'],
+    consultar_conversas: ['conversa', 'conversas', 'atendimento', 'atendimentos'],
+    consultar_metricas: ['metrica', 'metricas', 'resumo', 'como estamos', 'visao geral', 'indicador', 'indicadores'],
   };
 
-  const encontradas = Object.entries(regras)
-    .filter(([nome, regex]) => permitidas.includes(nome) && regex.test(t))
+  const encontradas = Object.entries(termos)
+    .filter(([nome, palavras]) =>
+      permitidas.includes(nome) &&
+      palavras.some((palavra) => t.includes(palavra)),
+    )
     .map(([nome]) => nome);
 
-  // Uma pergunta de visão geral pede o agregado completo; nesse caso não
-  // precisamos disparar as outras consultas também.
+  // Uma pergunta de visão geral pede somente o agregado.
   if (encontradas.includes('consultar_metricas')) return ['consultar_metricas'];
+
   return encontradas;
 }
 
