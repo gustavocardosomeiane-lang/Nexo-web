@@ -56,6 +56,7 @@ class VozGemini implements ProvedorVoz {
   private contextoAudio: AudioContext | null = null;
   private fonteAtual: AudioBufferSourceNode | null = null;
   private falando = false;
+  private faixaMicrofone: MediaStream | null = null;
 
   get podeFalar(): boolean {
     return typeof window !== 'undefined' && ('AudioContext' in window || 'webkitAudioContext' in (window as unknown as Record<string, unknown>));
@@ -156,9 +157,27 @@ class VozGemini implements ProvedorVoz {
   }
 
   private async iniciarEscuta(Construtor: ConstrutorReconhecimento, cb: AoOuvir): Promise<void> {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
+        this.faixaMicrofone?.getTracks().forEach((faixa) => faixa.stop());
+        this.faixaMicrofone = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
+    } catch (e) {
+      const nome = e instanceof DOMException ? e.name : '';
+      const mensagens: Record<string, string> = {
+        NotAllowedError: 'Permissão de microfone negada. Libere o microfone no navegador e tente novamente.',
+        PermissionDeniedError: 'Permissão de microfone negada. Libere o microfone no navegador e tente novamente.',
+        NotFoundError: 'Nenhum microfone foi encontrado neste dispositivo.',
+        NotReadableError: 'O microfone está sendo usado por outro aplicativo.',
+      };
+      cb.aoErro?.(mensagens[nome] ?? 'Não foi possível acessar o microfone.');
+      cb.aoFim?.();
+      return;
+    }
+
     const rec = new Construtor();
     rec.lang = 'pt-BR';
-    rec.continuous = true;
+    rec.continuous = false;
     rec.interimResults = true;
     let acumulado = '';
     let parcialAtual = '';
@@ -166,12 +185,18 @@ class VozGemini implements ProvedorVoz {
     let finalizado = false;
     let temporizadorSilencio: ReturnType<typeof setTimeout> | null = null;
 
+    const liberarMicrofone = () => {
+      this.faixaMicrofone?.getTracks().forEach((faixa) => faixa.stop());
+      this.faixaMicrofone = null;
+    };
+
     const concluir = () => {
       if (temporizadorSilencio) { clearTimeout(temporizadorSilencio); temporizadorSilencio = null; }
       if (finalizado) return;
       finalizado = true;
       const texto = acumulado.trim() || parcialAtual.trim();
       try { rec.stop(); } catch {}
+      liberarMicrofone();
       if (texto && !houveErro) cb.aoFinal?.(texto);
     };
 
@@ -183,13 +208,14 @@ class VozGemini implements ProvedorVoz {
     rec.onresult = (e) => {
       let parcial = '';
       let novosFinais = '';
-      for (let i = 0; i < e.results.length; i++) {
+      const inicio = Math.max(0, e.results.length - 3);
+      for (let i = inicio; i < e.results.length; i++) {
         const r = e.results[i]!;
         const txt = r[0]?.transcript ?? '';
         if (r.isFinal) novosFinais += `${txt} `;
         else parcial += `${txt} `;
       }
-      if (novosFinais.trim()) acumulado += `${novosFinais.trim()} `;
+      if (novosFinais.trim()) acumulado = `${acumulado} ${novosFinais.trim()}`.trim();
       parcialAtual = parcial.trim();
       const visivel = `${acumulado} ${parcialAtual}`.trim();
       if (visivel) { cb.aoParcial?.(visivel); programarEnvio(); }
@@ -199,7 +225,7 @@ class VozGemini implements ProvedorVoz {
       if (e.error === 'no-speech') return;
       houveErro = true;
       const erros: Record<string, string> = {
-        'not-allowed': 'Permissão de microfone negada.',
+        'not-allowed': 'Permissão de microfone negada. Libere o microfone no navegador e tente novamente.',
         'service-not-allowed': 'O serviço de reconhecimento de voz não está disponível neste navegador.',
         'audio-capture': 'Não foi possível acessar o microfone.',
         network: 'Erro de rede no reconhecimento de voz.',
@@ -212,6 +238,7 @@ class VozGemini implements ProvedorVoz {
     rec.onend = () => {
       this.reconhecimento = null;
       if (!finalizado && !houveErro && (acumulado.trim() || parcialAtual.trim())) concluir();
+      else liberarMicrofone();
       cb.aoFim?.();
     };
 
@@ -220,6 +247,7 @@ class VozGemini implements ProvedorVoz {
       rec.start();
     } catch {
       this.reconhecimento = null;
+      liberarMicrofone();
       cb.aoErro?.('Não foi possível iniciar a escuta. Tente clicar novamente no microfone.');
       cb.aoFim?.();
     }
@@ -230,6 +258,8 @@ class VozGemini implements ProvedorVoz {
       try { this.reconhecimento.stop(); } catch { try { this.reconhecimento.abort(); } catch {} }
       this.reconhecimento = null;
     }
+    this.faixaMicrofone?.getTracks().forEach((faixa) => faixa.stop());
+    this.faixaMicrofone = null;
   }
 }
 
