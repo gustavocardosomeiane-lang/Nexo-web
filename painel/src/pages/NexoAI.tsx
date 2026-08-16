@@ -9,7 +9,7 @@
  * Identidade da NEXO WEB: preto + vermelho, contida em `.nexo-ai`.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { Aviso } from '@/components/ui/primitives';
 import { Icon } from '@/components/ui/Icon';
 import { useNexoAI } from '@/nexo-ai/useNexoAI';
@@ -18,11 +18,6 @@ import { Orbe } from '@/nexo-ai/Orbe';
 export function NexoAI() {
   const ai = useNexoAI();
   const [texto, setTexto] = useState('');
-  const fimRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    fimRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [ai.mensagens, ai.estado]);
 
   const submeter = () => {
     const t = texto.trim();
@@ -64,22 +59,6 @@ export function NexoAI() {
         {ai.erro && (
           <div style={{ maxWidth: 460, width: '100%' }}>
             <Aviso tom="erro">{ai.erro}</Aviso>
-          </div>
-        )}
-
-        {(ai.mensagens.some((m) => m.papel === 'assistant') || ai.parcialEscuta) && (
-          <div className="nexo-ai-conversa" aria-live="polite">
-            {ai.mensagens.filter((m) => m.papel === 'assistant').map((m) => (
-              <div key={m.id} className="nexo-ai-bolha de-assistant">
-                {m.conteudo}
-              </div>
-            ))}
-            {ai.parcialEscuta && (
-              <div className="nexo-ai-bolha parcial" aria-live="off">
-                {ai.parcialEscuta}
-              </div>
-            )}
-            <div ref={fimRef} />
           </div>
         )}
       </div>

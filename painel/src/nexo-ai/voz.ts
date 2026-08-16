@@ -39,6 +39,8 @@ export interface ProvedorVoz {
   pararFala(): void;
   ouvir(cb?: AoOuvir): void;
   pararEscuta(): void;
+  /** Para a escuta chamando rec.stop() — Chrome comita isFinal e dispara aoFinal → enviar. */
+  finalizarEscuta(): void;
 }
 
 /* --------------------------------------------------------------------------
@@ -355,8 +357,8 @@ class VozGemini implements ProvedorVoz {
       this.micAnalyser = analyser;
 
       const buf = new Uint8Array(analyser.frequencyBinCount);
-      const LIMIAR_VOZ = 0.06;  // abaixo deste nível = silêncio
-      const SILENCIO_MS = 1500; // ms de silêncio após fala → forçar stop
+      const LIMIAR_VOZ = 0.04;  // abaixo deste nível = silêncio
+      const SILENCIO_MS = 800;  // ms de silêncio após fala → forçar stop
       let falou = false;
 
       this.micNivelTimer = setInterval(() => {
@@ -477,6 +479,17 @@ class VozGemini implements ProvedorVoz {
     if (this.reconhecimento) {
       try { this.reconhecimento.abort(); } catch { /* já parado */ }
       this.reconhecimento = null;
+    }
+  }
+
+  finalizarEscuta(): void {
+    // rec.stop() faz Chrome comitar o transcript pendente como isFinal=true
+    // e depois dispara onend → pararAnalyseMic + aoFim.
+    if (this.reconhecimento) {
+      try { this.reconhecimento.stop(); } catch { /* já parado */ }
+      // Não null aqui — onend limpa
+    } else {
+      this.pararAnalyseMic();
     }
   }
 }

@@ -150,8 +150,8 @@ export function useNexoAI(): UseNexoAI {
       return;
     }
     if (estado === 'listening') {
-      v.pararEscuta();
-      setEstado('idle');
+      // finalizarEscuta chama rec.stop() → Chrome comita isFinal → aoFinal → enviar
+      v.finalizarEscuta();
       return;
     }
     v.pararFala();
