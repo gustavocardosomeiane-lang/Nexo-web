@@ -159,9 +159,6 @@ class VozGemini implements ProvedorVoz {
   private async iniciarEscuta(Construtor: ConstrutorReconhecimento, cb: AoOuvir): Promise<void> {
     const rec = new Construtor();
     rec.lang = 'pt-BR';
-    // O próprio SpeechRecognition controla o microfone. Não abrimos getUserMedia
-    // em paralelo, pois isso pode manter a faixa ocupada e impedir o reconhecimento
-    // de detectar o fim da fala, especialmente no Chrome mobile.
     rec.continuous = false;
     rec.interimResults = true;
 
@@ -189,7 +186,6 @@ class VozGemini implements ProvedorVoz {
 
     const programarEnvio = () => {
       cancelarTemporizador();
-      // Envia automaticamente após uma pausa curta, sem botão de envio.
       this.temporizadorSilencio = setTimeout(concluir, 650);
     };
 
@@ -229,8 +225,6 @@ class VozGemini implements ProvedorVoz {
     rec.onend = () => {
       cancelarTemporizador();
       this.reconhecimento = null;
-      // Alguns navegadores encerram o reconhecimento automaticamente após o silêncio.
-      // Nesse caso, o texto capturado deve ser enviado imediatamente.
       if (!finalizado && !houveErro && (acumulado.trim() || parcialAtual.trim())) concluir();
       cb.aoFim?.();
     };
@@ -247,18 +241,14 @@ class VozGemini implements ProvedorVoz {
   }
 
   pararEscuta(): void {
-    cancelarSilencio(this);
+    if (this.temporizadorSilencio) {
+      clearTimeout(this.temporizadorSilencio);
+      this.temporizadorSilencio = null;
+    }
     if (this.reconhecimento) {
       try { this.reconhecimento.stop(); } catch { try { this.reconhecimento.abort(); } catch {} }
       this.reconhecimento = null;
     }
-  }
-}
-
-function cancelarSilencio(instancia: VozGemini): void {
-  if (instancia['temporizadorSilencio']) {
-    clearTimeout(instancia['temporizadorSilencio']);
-    instancia['temporizadorSilencio'] = null;
   }
 }
 
