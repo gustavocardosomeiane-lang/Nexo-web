@@ -1,19 +1,229 @@
-/* Voz e escuta da NEXO AI usando Web Speech API. */
+/* Voz e escuta da NEXO AI: Speech Recognition para entrada + Gemini TTS para saída. */
+import { getSupabase } from '@/data/supabase/client';
+
 export interface AoFalar { aoIniciar?: () => void; aoTerminar?: () => void; aoErro?: (motivo: string) => void; aoNivel?: (nivel: number) => void; }
 export interface AoOuvir { aoParcial?: (texto: string) => void; aoFinal?: (texto: string) => void; aoErro?: (motivo: string) => void; aoFim?: () => void; }
 export interface ProvedorVoz { readonly nome: string; readonly podeFalar: boolean; readonly podeOuvir: boolean; falar(texto: string, cb?: AoFalar): void; pararFala(): void; ouvir(cb?: AoOuvir): void; pararEscuta(): void; }
-interface ReconhecimentoFala extends EventTarget { lang: string; continuous: boolean; interimResults: boolean; start(): void; stop(): void; abort(): void; onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }> }) => void) | null; onerror: ((e: { error: string }) => void) | null; onend: (() => void) | null; }
-type ConstrutorReconhecimento = new () => ReconhecimentoFala;
-function construtorReconhecimento(): ConstrutorReconhecimento | null { if (typeof window === 'undefined') return null; const w = window as unknown as { SpeechRecognition?: ConstrutorReconhecimento; webkitSpeechRecognition?: ConstrutorReconhecimento }; return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null; }
-export function escolherVozFeminina(vozes: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null { if (!vozes.length) return null; const ptBR = vozes.filter((v) => /pt[-_]?BR/i.test(v.lang)); const candidatas = ptBR.length ? ptBR : vozes.filter((v) => /^pt/i.test(v.lang)); const nomes = /(maria|luciana|fernanda|francisca|ana|helena|vit[óo]ria|female|mulher|feminin)/i; return candidatas.find((v) => nomes.test(v.name)) ?? candidatas[0] ?? vozes[0] ?? null; }
-class VozNativa implements ProvedorVoz {
- readonly nome = 'navegador'; private reconhecimento: ReconhecimentoFala | null = null; private timerNivel: ReturnType<typeof setInterval> | null = null; private vozCache: SpeechSynthesisVoice | null = null;
- get podeFalar(): boolean { return typeof window !== 'undefined' && 'speechSynthesis' in window; }
- get podeOuvir(): boolean { return construtorReconhecimento() !== null; }
- private resolverVoz(): SpeechSynthesisVoice | null { if (this.vozCache) return this.vozCache; this.vozCache = escolherVozFeminina(window.speechSynthesis.getVoices()); return this.vozCache; }
- falar(texto: string, cb: AoFalar = {}): void { if (!this.podeFalar || !texto.trim()) { cb.aoTerminar?.(); return; } window.speechSynthesis.cancel(); const fala = new SpeechSynthesisUtterance(texto.replace(/[*_~`#]+/g, ' ')); fala.lang = 'pt-BR'; fala.rate = 1.05; fala.pitch = 1.05; const voz = this.resolverVoz(); if (voz) fala.voice = voz; fala.onstart = () => { cb.aoIniciar?.(); this.timerNivel = setInterval(() => cb.aoNivel?.(0.35 + Math.random() * 0.5), 90); }; const encerrar = () => { if (this.timerNivel) clearInterval(this.timerNivel); this.timerNivel = null; cb.aoNivel?.(0); }; fala.onend = () => { encerrar(); cb.aoTerminar?.(); }; fala.onerror = () => { encerrar(); cb.aoErro?.('Falha ao sintetizar a voz.'); }; window.speechSynthesis.speak(fala); }
- pararFala(): void { if (this.podeFalar) window.speechSynthesis.cancel(); if (this.timerNivel) { clearInterval(this.timerNivel); this.timerNivel = null; } }
- ouvir(cb: AoOuvir = {}): void { const Construtor = construtorReconhecimento(); if (!Construtor) { cb.aoErro?.('Este navegador não reconhece voz. Use o teclado.'); return; } this.pararEscuta(); const rec = new Construtor(); rec.lang = 'pt-BR'; rec.continuous = false; rec.interimResults = true; rec.onresult = (e) => { let parcial = ''; let finalizado = ''; for (let i = 0; i < e.results.length; i++) { const r = e.results[i]!; const txt = r[0]?.transcript ?? ''; if (r.isFinal) finalizado += txt; else parcial += txt; } if (parcial) cb.aoParcial?.(parcial); if (finalizado) cb.aoFinal?.(finalizado.trim()); }; rec.onerror = (e) => { const erros: Record<string, string> = { 'not-allowed': 'Permissão de microfone negada.', 'service-not-allowed': 'O serviço de reconhecimento de voz não está disponível neste navegador.', 'no-speech': 'Não ouvi nada. Tente de novo.', 'audio-capture': 'Não foi possível acessar o microfone.', network: 'Erro de rede no reconhecimento de voz.', aborted: 'O reconhecimento de voz foi interrompido.', 'language-not-supported': 'O reconhecimento de português não está disponível neste navegador.' }; cb.aoErro?.(erros[e.error] ?? `Falha no reconhecimento de voz (${e.error}).`); }; rec.onend = () => cb.aoFim?.(); this.reconhecimento = rec; try { rec.start(); } catch { cb.aoErro?.('Não foi possível iniciar a escuta.'); } }
- pararEscuta(): void { if (this.reconhecimento) { try { this.reconhecimento.abort(); } catch {} this.reconhecimento = null; } }
+
+interface ReconhecimentoFala extends EventTarget {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  start(): void;
+  stop(): void;
+  abort(): void;
+  onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }> }) => void) | null;
+  onerror: ((e: { error: string }) => void) | null;
+  onend: (() => void) | null;
 }
-export function criarProvedorVoz(): ProvedorVoz { return new VozNativa(); }
+type ConstrutorReconhecimento = new () => ReconhecimentoFala;
+
+function construtorReconhecimento(): ConstrutorReconhecimento | null {
+  if (typeof window === 'undefined') return null;
+  const w = window as unknown as { SpeechRecognition?: ConstrutorReconhecimento; webkitSpeechRecognition?: ConstrutorReconhecimento };
+  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
+}
+
+type ContextoAudio = AudioContext & { webkit?: never };
+function criarContextoAudio(): AudioContext | null {
+  if (typeof window === 'undefined') return null;
+  const w = window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext };
+  const Ctor = w.AudioContext ?? w.webkitAudioContext;
+  return Ctor ? new Ctor() : null;
+}
+
+function limparParaVoz(texto: string): string {
+  return texto
+    .replace(/[*_~`#]+/g, ' ')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 6000);
+}
+
+class VozGemini implements ProvedorVoz {
+  readonly nome = 'gemini-kore';
+  private reconhecimento: ReconhecimentoFala | null = null;
+  private contextoAudio: AudioContext | null = null;
+  private fonteAtual: AudioBufferSourceNode | null = null;
+  private falando = false;
+
+  get podeFalar(): boolean {
+    return typeof window !== 'undefined' && ('AudioContext' in window || 'webkitAudioContext' in (window as unknown as Record<string, unknown>));
+  }
+
+  get podeOuvir(): boolean { return construtorReconhecimento() !== null; }
+
+  private garantirContextoAudio(): AudioContext | null {
+    if (!this.contextoAudio) this.contextoAudio = criarContextoAudio();
+    return this.contextoAudio;
+  }
+
+  private async tokenSessao(): Promise<string | null> {
+    const { data } = await getSupabase().auth.getSession();
+    return data.session?.access_token ?? null;
+  }
+
+  private async prepararAudio(): Promise<void> {
+    const ctx = this.garantirContextoAudio();
+    if (ctx?.state === 'suspended') await ctx.resume();
+  }
+
+  falar(texto: string, cb: AoFalar = {}): void {
+    const limpo = limparParaVoz(texto);
+    if (!this.podeFalar || !limpo) { cb.aoTerminar?.(); return; }
+
+    this.pararFala();
+    this.falando = true;
+    cb.aoIniciar?.();
+
+    void (async () => {
+      try {
+        await this.prepararAudio();
+        const token = await this.tokenSessao();
+        if (!token) throw new Error('Sua sessão expirou. Entre novamente para falar com a NEXO AI.');
+
+        const resposta = await fetch('/api/nexo-ai/falar', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ texto: limpo }),
+        });
+        if (!resposta.ok) {
+          const corpo = await resposta.json().catch(() => null) as { erro?: string } | null;
+          throw new Error(corpo?.erro ?? 'Não foi possível gerar a voz.');
+        }
+
+        const bytes = await resposta.arrayBuffer();
+        const ctx = this.garantirContextoAudio();
+        if (!ctx) throw new Error('Áudio não disponível neste navegador.');
+        await ctx.resume();
+        const buffer = await ctx.decodeAudioData(bytes.slice(0));
+        if (!this.falando) return;
+
+        const fonte = ctx.createBufferSource();
+        fonte.buffer = buffer;
+        fonte.connect(ctx.destination);
+        this.fonteAtual = fonte;
+        fonte.onended = () => {
+          if (this.fonteAtual === fonte) this.fonteAtual = null;
+          this.falando = false;
+          cb.aoNivel?.(0);
+          cb.aoTerminar?.();
+        };
+        const inicio = performance.now();
+        const atualizarNivel = () => {
+          if (!this.falando || this.fonteAtual !== fonte) return;
+          const decorrido = (performance.now() - inicio) / 1000;
+          const duracao = buffer.duration || 1;
+          const pulso = 0.3 + Math.min(0.65, Math.max(0, 1 - decorrido / duracao) * 0.5);
+          cb.aoNivel?.(pulso);
+          requestAnimationFrame(atualizarNivel);
+        };
+        atualizarNivel();
+        fonte.start(0);
+      } catch (e) {
+        this.falando = false;
+        cb.aoNivel?.(0);
+        cb.aoErro?.(e instanceof Error ? e.message : 'Falha ao reproduzir a voz.');
+      }
+    })();
+  }
+
+  pararFala(): void {
+    this.falando = false;
+    if (this.fonteAtual) {
+      try { this.fonteAtual.stop(); } catch {}
+      this.fonteAtual = null;
+    }
+  }
+
+  ouvir(cb: AoOuvir = {}): void {
+    const Construtor = construtorReconhecimento();
+    if (!Construtor) { cb.aoErro?.('Este navegador não reconhece voz. Use o teclado.'); return; }
+
+    this.pararEscuta();
+    this.pararFala();
+    void this.iniciarEscuta(Construtor, cb);
+  }
+
+  private async iniciarEscuta(Construtor: ConstrutorReconhecimento, cb: AoOuvir): Promise<void> {
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('Este navegador não disponibiliza o microfone.');
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+    } catch (e) {
+      const nome = e instanceof DOMException ? e.name : '';
+      if (nome === 'NotAllowedError' || nome === 'SecurityError') {
+        cb.aoErro?.('Permissão de microfone negada. Libere o microfone nas configurações do navegador.');
+      } else {
+        cb.aoErro?.('Não foi possível acessar o microfone.');
+      }
+      cb.aoFim?.();
+      return;
+    }
+
+    const rec = new Construtor();
+    rec.lang = 'pt-BR';
+    rec.continuous = false;
+    rec.interimResults = true;
+    let acumulado = '';
+    let houveErro = false;
+    let enviando = false;
+
+    rec.onresult = (e) => {
+      let parcial = '';
+      let finalizado = '';
+      for (let i = 0; i < e.results.length; i++) {
+        const r = e.results[i]!;
+        const txt = r[0]?.transcript ?? '';
+        if (r.isFinal) finalizado += `${txt} `;
+        else parcial += `${txt} `;
+      }
+      if (finalizado.trim()) acumulado += `${finalizado.trim()} `;
+      const visivel = `${acumulado} ${parcial}`.trim();
+      if (visivel) cb.aoParcial?.(visivel);
+    };
+
+    rec.onerror = (e) => {
+      houveErro = true;
+      const erros: Record<string, string> = {
+        'not-allowed': 'Permissão de microfone negada.',
+        'service-not-allowed': 'O serviço de reconhecimento de voz não está disponível neste navegador.',
+        'no-speech': 'Não ouvi nada. Tente de novo.',
+        'audio-capture': 'Não foi possível acessar o microfone.',
+        network: 'Erro de rede no reconhecimento de voz.',
+        aborted: 'O reconhecimento de voz foi interrompido.',
+        'language-not-supported': 'O reconhecimento de português não está disponível neste navegador.',
+      };
+      cb.aoErro?.(erros[e.error] ?? `Falha no reconhecimento de voz (${e.error}).`);
+    };
+
+    rec.onend = () => {
+      this.reconhecimento = null;
+      if (!houveErro && !enviando && acumulado.trim()) {
+        enviando = true;
+        cb.aoFinal?.(acumulado.trim());
+      }
+      cb.aoFim?.();
+    };
+
+    this.reconhecimento = rec;
+    try {
+      rec.start();
+    } catch {
+      this.reconhecimento = null;
+      cb.aoErro?.('Não foi possível iniciar a escuta. Tente clicar novamente no microfone.');
+      cb.aoFim?.();
+    }
+  }
+
+  pararEscuta(): void {
+    if (this.reconhecimento) {
+      try { this.reconhecimento.stop(); } catch { try { this.reconhecimento.abort(); } catch {} }
+      this.reconhecimento = null;
+    }
+  }
+}
+
+export function criarProvedorVoz(): ProvedorVoz { return new VozGemini(); }
