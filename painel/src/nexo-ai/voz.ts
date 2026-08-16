@@ -57,6 +57,12 @@ class VozGemini implements ProvedorVoz {
   private fonteAtual: AudioBufferSourceNode | null = null;
   private falando = false;
   private temporizadorSilencio: ReturnType<typeof setTimeout> | null = null;
+  private faixaMicrofone: MediaStream | null = null;
+  private analisadorMicrofone: AnalyserNode | null = null;
+  private fonteMicrofone: MediaStreamAudioSourceNode | null = null;
+  private frameVoz: number | null = null;
+  private inicioVoz = false;
+  private ultimoSom = 0;
 
   get podeFalar(): boolean {
     return typeof window !== 'undefined' && ('AudioContext' in window || 'webkitAudioContext' in (window as unknown as Record<string, unknown>));
@@ -156,7 +162,88 @@ class VozGemini implements ProvedorVoz {
     void this.iniciarEscuta(Construtor, cb);
   }
 
+  private iniciarVAD(ctx: AudioContext, stream: MediaStream, concluir: () => void): void {
+    const analisador = ctx.createAnalyser();
+    analisador.fftSize = 512;
+    analisador.smoothingTimeConstant = 0.18;
+    const fonte = ctx.createMediaStreamSource(stream);
+    fonte.connect(analisador);
+    this.analisadorMicrofone = analisador;
+    this.fonteMicrofone = fonte;
+
+    const dados = new Float32Array(analisador.fftSize);
+    let pisoRuido = 0.006;
+    const LIMIAR_FALA = 0.022;
+    const SILENCIO_MS = 700;
+    const PRE_ROLL_MS = 350;
+    const comecouEm = performance.now();
+    this.inicioVoz = false;
+    this.ultimoSom = performance.now();
+
+    const verificar = () => {
+      if (!this.faixaMicrofone || this.faixaMicrofone !== stream) return;
+      analisador.getFloatTimeDomainData(dados);
+      let soma = 0;
+      for (let i = 0; i < dados.length; i++) soma += dados[i] * dados[i];
+      const rms = Math.sqrt(soma / dados.length);
+      const agora = performance.now();
+
+      if (!this.inicioVoz && agora - comecouEm < PRE_ROLL_MS && rms < LIMIAR_FALA) {
+        pisoRuido = Math.min(0.02, pisoRuido * 0.92 + rms * 0.08);
+      }
+
+      const limiar = Math.max(LIMIAR_FALA, pisoRuido * 3.2);
+      if (rms >= limiar) {
+        this.inicioVoz = true;
+        this.ultimoSom = agora;
+      } else if (this.inicioVoz && agora - this.ultimoSom >= SILENCIO_MS) {
+        concluir();
+        return;
+      }
+
+      this.frameVoz = requestAnimationFrame(verificar);
+    };
+
+    this.frameVoz = requestAnimationFrame(verificar);
+  }
+
+  private pararVAD(): void {
+    if (this.frameVoz !== null) cancelAnimationFrame(this.frameVoz);
+    this.frameVoz = null;
+    try { this.fonteMicrofone?.disconnect(); } catch {}
+    try { this.analisadorMicrofone?.disconnect(); } catch {}
+    this.fonteMicrofone = null;
+    this.analisadorMicrofone = null;
+  }
+
   private async iniciarEscuta(Construtor: ConstrutorReconhecimento, cb: AoOuvir): Promise<void> {
+    const ctx = this.garantirContextoAudio();
+    if (!ctx) {
+      cb.aoErro?.('Áudio não disponível neste navegador.');
+      cb.aoFim?.();
+      return;
+    }
+
+    try {
+      await ctx.resume();
+      this.faixaMicrofone?.getTracks().forEach((faixa) => faixa.stop());
+      this.faixaMicrofone = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    } catch (e) {
+      const nome = e instanceof DOMException ? e.name : '';
+      const mensagens: Record<string, string> = {
+        NotAllowedError: 'Permissão de microfone negada. Libere o microfone no navegador e tente novamente.',
+        PermissionDeniedError: 'Permissão de microfone negada. Libere o microfone no navegador e tente novamente.',
+        NotFoundError: 'Nenhum microfone foi encontrado neste dispositivo.',
+        NotReadableError: 'O microfone está sendo usado por outro aplicativo.',
+      };
+      cb.aoErro?.(mensagens[nome] ?? 'Não foi possível acessar o microfone.');
+      cb.aoFim?.();
+      return;
+    }
+
+    const stream = this.faixaMicrofone;
+    this.pararVAD();
+
     const rec = new Construtor();
     rec.lang = 'pt-BR';
     rec.continuous = false;
@@ -174,6 +261,12 @@ class VozGemini implements ProvedorVoz {
       }
     };
 
+    const liberarMicrofone = () => {
+      this.pararVAD();
+      this.faixaMicrofone?.getTracks().forEach((faixa) => faixa.stop());
+      this.faixaMicrofone = null;
+    };
+
     const concluir = () => {
       cancelarTemporizador();
       if (finalizado) return;
@@ -181,24 +274,26 @@ class VozGemini implements ProvedorVoz {
       const texto = acumulado.trim() || parcialAtual.trim();
       try { rec.stop(); } catch {}
       this.reconhecimento = null;
+      liberarMicrofone();
       if (texto && !houveErro) cb.aoFinal?.(texto);
     };
 
     const programarEnvio = () => {
       cancelarTemporizador();
-      this.temporizadorSilencio = setTimeout(concluir, 650);
+      this.temporizadorSilencio = setTimeout(concluir, 800);
     };
 
     rec.onresult = (e) => {
       let parcial = '';
       let novosFinais = '';
-      for (let i = 0; i < e.results.length; i++) {
+      const inicio = Math.max(0, e.results.length - 3);
+      for (let i = inicio; i < e.results.length; i++) {
         const r = e.results[i]!;
         const txt = r[0]?.transcript ?? '';
         if (r.isFinal) novosFinais += `${txt} `;
         else parcial += `${txt} `;
       }
-      if (novosFinais.trim()) acumulado = novosFinais.trim();
+      if (novosFinais.trim()) acumulado = `${acumulado} ${novosFinais.trim()}`.trim();
       parcialAtual = parcial.trim();
       const visivel = `${acumulado} ${parcialAtual}`.trim();
       if (visivel) {
@@ -226,15 +321,18 @@ class VozGemini implements ProvedorVoz {
       cancelarTemporizador();
       this.reconhecimento = null;
       if (!finalizado && !houveErro && (acumulado.trim() || parcialAtual.trim())) concluir();
+      else liberarMicrofone();
       cb.aoFim?.();
     };
 
     this.reconhecimento = rec;
+    this.iniciarVAD(ctx, stream, concluir);
+
     try {
       rec.start();
     } catch {
       this.reconhecimento = null;
-      cancelarTemporizador();
+      liberarMicrofone();
       cb.aoErro?.('Não foi possível iniciar a escuta. Tente clicar novamente no microfone.');
       cb.aoFim?.();
     }
@@ -249,6 +347,9 @@ class VozGemini implements ProvedorVoz {
       try { this.reconhecimento.stop(); } catch { try { this.reconhecimento.abort(); } catch {} }
       this.reconhecimento = null;
     }
+    this.pararVAD();
+    this.faixaMicrofone?.getTracks().forEach((faixa) => faixa.stop());
+    this.faixaMicrofone = null;
   }
 }
 
