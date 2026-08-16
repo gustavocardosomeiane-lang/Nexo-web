@@ -41,6 +41,15 @@ function limparParaVoz(texto: string): string {
     .slice(0, 6000);
 }
 
+function pcm16ParaBuffer(ctx: AudioContext, bytes: ArrayBuffer): AudioBuffer {
+  const view = new DataView(bytes);
+  const samples = Math.floor(view.byteLength / 2);
+  const buffer = ctx.createBuffer(1, samples, 24000);
+  const canal = buffer.getChannelData(0);
+  for (let i = 0; i < samples; i++) canal[i] = view.getInt16(i * 2, true) / 32768;
+  return buffer;
+}
+
 class VozGemini implements ProvedorVoz {
   readonly nome = 'gemini-kore';
   private reconhecimento: ReconhecimentoFala | null = null;
@@ -97,7 +106,7 @@ class VozGemini implements ProvedorVoz {
         const ctx = this.garantirContextoAudio();
         if (!ctx) throw new Error('Áudio não disponível neste navegador.');
         await ctx.resume();
-        const buffer = await ctx.decodeAudioData(bytes.slice(0));
+        const buffer = pcm16ParaBuffer(ctx, bytes);
         if (!this.falando) return;
 
         const fonte = ctx.createBufferSource();
@@ -147,49 +156,51 @@ class VozGemini implements ProvedorVoz {
   }
 
   private async iniciarEscuta(Construtor: ConstrutorReconhecimento, cb: AoOuvir): Promise<void> {
-    try {
-      if (!navigator.mediaDevices?.getUserMedia) throw new Error('Este navegador não disponibiliza o microfone.');
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((track) => track.stop());
-    } catch (e) {
-      const nome = e instanceof DOMException ? e.name : '';
-      if (nome === 'NotAllowedError' || nome === 'SecurityError') {
-        cb.aoErro?.('Permissão de microfone negada. Libere o microfone nas configurações do navegador.');
-      } else {
-        cb.aoErro?.('Não foi possível acessar o microfone.');
-      }
-      cb.aoFim?.();
-      return;
-    }
-
     const rec = new Construtor();
     rec.lang = 'pt-BR';
-    rec.continuous = false;
+    rec.continuous = true;
     rec.interimResults = true;
     let acumulado = '';
+    let parcialAtual = '';
     let houveErro = false;
-    let enviando = false;
+    let finalizado = false;
+    let temporizadorSilencio: ReturnType<typeof setTimeout> | null = null;
+
+    const concluir = () => {
+      if (temporizadorSilencio) { clearTimeout(temporizadorSilencio); temporizadorSilencio = null; }
+      if (finalizado) return;
+      finalizado = true;
+      const texto = acumulado.trim() || parcialAtual.trim();
+      try { rec.stop(); } catch {}
+      if (texto && !houveErro) cb.aoFinal?.(texto);
+    };
+
+    const programarEnvio = () => {
+      if (temporizadorSilencio) clearTimeout(temporizadorSilencio);
+      temporizadorSilencio = setTimeout(concluir, 900);
+    };
 
     rec.onresult = (e) => {
       let parcial = '';
-      let finalizado = '';
+      let novosFinais = '';
       for (let i = 0; i < e.results.length; i++) {
         const r = e.results[i]!;
         const txt = r[0]?.transcript ?? '';
-        if (r.isFinal) finalizado += `${txt} `;
+        if (r.isFinal) novosFinais += `${txt} `;
         else parcial += `${txt} `;
       }
-      if (finalizado.trim()) acumulado += `${finalizado.trim()} `;
-      const visivel = `${acumulado} ${parcial}`.trim();
-      if (visivel) cb.aoParcial?.(visivel);
+      if (novosFinais.trim()) acumulado += `${novosFinais.trim()} `;
+      parcialAtual = parcial.trim();
+      const visivel = `${acumulado} ${parcialAtual}`.trim();
+      if (visivel) { cb.aoParcial?.(visivel); programarEnvio(); }
     };
 
     rec.onerror = (e) => {
+      if (e.error === 'no-speech') return;
       houveErro = true;
       const erros: Record<string, string> = {
         'not-allowed': 'Permissão de microfone negada.',
         'service-not-allowed': 'O serviço de reconhecimento de voz não está disponível neste navegador.',
-        'no-speech': 'Não ouvi nada. Tente de novo.',
         'audio-capture': 'Não foi possível acessar o microfone.',
         network: 'Erro de rede no reconhecimento de voz.',
         aborted: 'O reconhecimento de voz foi interrompido.',
@@ -200,10 +211,7 @@ class VozGemini implements ProvedorVoz {
 
     rec.onend = () => {
       this.reconhecimento = null;
-      if (!houveErro && !enviando && acumulado.trim()) {
-        enviando = true;
-        cb.aoFinal?.(acumulado.trim());
-      }
+      if (!finalizado && !houveErro && (acumulado.trim() || parcialAtual.trim())) concluir();
       cb.aoFim?.();
     };
 
