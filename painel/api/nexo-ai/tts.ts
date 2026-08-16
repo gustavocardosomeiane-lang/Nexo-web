@@ -49,7 +49,7 @@ function pcmParaWav(pcm: Buffer, sampleRate = 24000, canais = 1, bits = 16): Buf
 }
 
 function corpoGeminiTTS(textoLimpo: string): string {
-  const input =
+  const texto =
     'Fale em português brasileiro, com voz feminina jovem, natural, calorosa e conversacional. ' +
     'Soe como uma assistente de IA moderna, confiante e humana. ' +
     'Não soe robótica, não fale como narradora de GPS, não exagere na entonação. ' +
@@ -57,10 +57,14 @@ function corpoGeminiTTS(textoLimpo: string): string {
 
   return JSON.stringify({
     model: TTS_MODELO,
-    input,
-    response_format: { type: 'audio' },
-    generation_config: {
-      speech_config: [{ voice: TTS_VOZ }],
+    steps: [{ role: 'user', content: [{ type: 'text', text: texto }] }],
+    generationConfig: {
+      responseModalities: ['audio'],
+      speechConfig: {
+        voiceConfig: {
+          prebuiltVoiceConfig: { voiceName: TTS_VOZ },
+        },
+      },
     },
   });
 }

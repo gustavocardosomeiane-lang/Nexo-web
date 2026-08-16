@@ -100,6 +100,7 @@ class VozGemini implements ProvedorVoz {
   private analyser: AnalyserNode | null = null;
   private nivelTimer: ReturnType<typeof setInterval> | null = null;
   private cancelado = false;
+  private ttsGenId = 0;
 
   // Análise de amplitude do microfone durante STT
   private micStream: MediaStream | null = null;
@@ -134,6 +135,7 @@ class VozGemini implements ProvedorVoz {
   }
 
   private async tentarGemini(texto: string, cb: AoFalar): Promise<void> {
+    const genId = ++this.ttsGenId;
     const _tts0 = Date.now();
     // Pré-aquece o AudioContext imediatamente — correrá em paralelo com a rede
     // para eliminar o atraso de criação/resume após o áudio chegar.
@@ -152,13 +154,13 @@ class VozGemini implements ProvedorVoz {
       });
     } catch (e) {
       // Erro de rede — endpoint inacessível. Fallback para voz nativa.
-      if (this.cancelado) return;
+      if (this.cancelado || genId !== this.ttsGenId) return;
       console.warn('[VozGemini] erro de rede, usando voz nativa:', e instanceof Error ? e.message : String(e));
       this.falarNativo(texto, cb);
       return;
     }
 
-    if (this.cancelado) return;
+    if (this.cancelado || genId !== this.ttsGenId) return;
     console.debug('[TIMING] T5 resposta TTS:', Date.now() - _tts0, 'ms | status:', resp.status);
 
     if (!resp.ok) {
@@ -185,11 +187,11 @@ class VozGemini implements ProvedorVoz {
       // Lê o buffer e aguarda o AudioContext prontos em paralelo — o ctx já deve
       // ter resolvido durante a chamada de rede, então a espera aqui é zero.
       const [raw, ctx] = await Promise.all([resp.arrayBuffer(), ctxPromise]);
-      if (this.cancelado) return;
+      if (this.cancelado || genId !== this.ttsGenId) return;
       console.debug('[TIMING] T5b áudio+ctx prontos:', Date.now() - _tts0, 'ms | bytes:', raw.byteLength);
 
       const audioBuffer = await ctx.decodeAudioData(raw);
-      if (this.cancelado) return;
+      if (this.cancelado || genId !== this.ttsGenId) return;
 
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
@@ -250,6 +252,7 @@ class VozGemini implements ProvedorVoz {
     this.cancelado = true;
     this.pararNivel();
     if (this.sourceNode) {
+      this.sourceNode.onended = null; // Impede aoTerminar de disparar em parada intencional
       try { this.sourceNode.stop(); } catch { /* já parado */ }
       this.sourceNode.disconnect();
       this.sourceNode = null;

@@ -49,6 +49,7 @@ export function useNexoAI(): UseNexoAI {
   const [parcialEscuta, setParcialEscuta] = useState('');
 
   const conversaId = useRef<string | undefined>(undefined);
+  const processando = useRef(false);
   const voz = useRef<ProvedorVoz | null>(null);
   const vozLigadaRef = useRef(vozLigada);
   vozLigadaRef.current = vozLigada;
@@ -99,6 +100,9 @@ export function useNexoAI(): UseNexoAI {
     async (texto: string) => {
       const limpo = texto.trim();
       if (!limpo) return;
+      if (processando.current) return; // Evita chamadas concorrentes
+      processando.current = true;
+
       const _t0 = Date.now();
 
       voz.current?.pararFala();
@@ -131,6 +135,8 @@ export function useNexoAI(): UseNexoAI {
         setEstado('error');
         // Volta para idle sozinho: 'error' só transita para 'idle'.
         setTimeout(() => setEstado((s) => (s === 'error' ? 'idle' : s)), 60);
+      } finally {
+        processando.current = false;
       }
     },
     [falar],
