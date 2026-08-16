@@ -24,7 +24,6 @@ function construtorReconhecimento(): ConstrutorReconhecimento | null {
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
 }
 
-type ContextoAudio = AudioContext & { webkit?: never };
 function criarContextoAudio(): AudioContext | null {
   if (typeof window === 'undefined') return null;
   const w = window as unknown as { AudioContext?: typeof AudioContext; webkitAudioContext?: typeof AudioContext };
