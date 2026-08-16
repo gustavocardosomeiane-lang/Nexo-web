@@ -42,6 +42,12 @@ import { podePorPapel } from '../_lib/nexo-ai/permissao.js';
 
 const LIMITE_MENSAGEM = 4000;
 
+const REGEX_DADOS = /\b(lead|cliente|vend[ae]|pag[ae]|projeto|campanha|conversa|m[eé]tric|resumo|quant[ao]s?|total|relat[oó]rio|receita|fatur|negócio|resultado|número|dado)\b/i;
+
+function precisaFerramentas(msg: string): boolean {
+  return REGEX_DADOS.test(msg);
+}
+
 interface Entrada {
   conversa_id?: string;
   mensagem?: string;
@@ -115,11 +121,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       podePorPapel(usuario.papel, mod),
     );
 
-    /* ---- Rodada 1 ---- */
+    /* ---- Rodada 1: oferece ferramentas só quando a mensagem pede dados ---- */
+    const ferramentasR1 = precisaFerramentas(mensagem) ? definicoesDe(permitidas) : [];
     let resposta = await modelo.conversar({
       sistema,
       mensagens,
-      ferramentas: definicoesDe(permitidas),
+      ferramentas: ferramentasR1,
       maxTokensSaida: 1024,
     });
 
