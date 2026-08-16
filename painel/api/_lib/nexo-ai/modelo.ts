@@ -1,4 +1,3 @@
-```typescript
 /**
  * Camada de MODELO da NEXO AI
  *
@@ -280,15 +279,13 @@ const GEMINI_BASE =
   'https://generativelanguage.googleapis.com/v1beta/models';
 
 /**
- * IMPORTANTE:
+ * Modelo principal da NEXO AI.
  *
- * Este é o modelo que foi TESTADO MANUALMENTE
+ * IMPORTANTE:
+ * Este é o modelo que foi testado manualmente
  * pelo terminal e respondeu:
  *
  * GEMINI OK
- *
- * Portanto não vamos depender de uma variável
- * antiga NEXO_AI_MODELO_GEMINI.
  */
 const GEMINI_MODELO = 'gemini-3.6-flash';
 
@@ -668,4 +665,3 @@ export function provedorAtivo(): ModeloProvider {
     'nenhum_provedor'
   );
 }
-```
