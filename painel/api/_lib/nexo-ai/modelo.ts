@@ -385,73 +385,53 @@ export const geminiProvider: ModeloProvider = {
 
     const url =
       `${GEMINI_BASE}/${GEMINI_MODELO}` +
-      `:generateContent?key=${encodeURIComponent(
-        key
-      )}`;
+      `:generateContent?key=${encodeURIComponent(key)}`;
 
-    let resposta: Response;
+    const corpo = JSON.stringify(montarCorpoGemini(pedido));
 
-    try {
-      resposta = await fetch(
-        url,
-        {
+    // Retry com backoff exponencial para 429 (rate limit temporário).
+    const MAX_TENTATIVAS = 3;
+    for (let tentativa = 0; tentativa < MAX_TENTATIVAS; tentativa++) {
+      if (tentativa > 0) {
+        const espera = Math.pow(2, tentativa) * 1000; // 2s, 4s
+        console.warn(`[NEXO AI] Gemini 429 — tentativa ${tentativa}/${MAX_TENTATIVAS - 1}, aguardando ${espera}ms`);
+        await new Promise((r) => setTimeout(r, espera));
+      }
+
+      let resposta: Response;
+      try {
+        resposta = await fetch(url, {
           method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: corpo,
+        });
+      } catch {
+        throw new ErroModelo(
+          'Não foi possível alcançar a API do Gemini.',
+          502,
+          'rede'
+        );
+      }
 
-          headers: {
-            'content-type':
-              'application/json',
-          },
+      // Repete na próxima iteração se for rate limit e ainda tiver tentativas.
+      if (resposta.status === 429 && tentativa < MAX_TENTATIVAS - 1) {
+        continue;
+      }
 
-          body: JSON.stringify(
-            montarCorpoGemini(pedido)
-          ),
-        }
-      );
-    } catch {
-      throw new ErroModelo(
-        'Não foi possível alcançar a API do Gemini.',
-        502,
-        'rede'
-      );
+      const dados = (await resposta.json().catch(() => null)) as Record<string, unknown> | null;
+
+      if (!resposta.ok || !dados) {
+        const erro = dados?.error as { message?: string; status?: string } | undefined;
+        const detalhe = erro?.message ?? `Gemini respondeu ${resposta.status}.`;
+        console.error('[NEXO AI] Gemini error:', { status: resposta.status, codigo: erro?.status, detalhe });
+        throw new ErroModelo(detalhe, resposta.status, resposta.status === 429 ? 'quota' : 'gemini_recusou');
+      }
+
+      return lerRespostaGemini(dados);
     }
 
-    const dados =
-      (await resposta
-        .json()
-        .catch(() => null)) as Record<
-        string,
-        unknown
-      > | null;
-
-    if (!resposta.ok || !dados) {
-      const erro =
-        dados?.error as
-          | {
-              message?: string;
-              status?: string;
-            }
-          | undefined;
-
-      const detalhe =
-        erro?.message ??
-        `Gemini respondeu ${resposta.status}.`;
-
-      console.error(
-        '[NEXO AI] Gemini error:',
-        {
-          status: resposta.status,
-          detalhe,
-        }
-      );
-
-      throw new ErroModelo(
-        detalhe,
-        resposta.status,
-        'gemini_recusou'
-      );
-    }
-
-    return lerRespostaGemini(dados);
+    // Todas as tentativas esgotadas por rate limit.
+    throw new ErroModelo('Limite de requisições do Gemini atingido.', 429, 'quota');
   },
 };
 

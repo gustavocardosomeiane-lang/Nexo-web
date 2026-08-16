@@ -157,10 +157,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (e instanceof NaoAutenticado) return responderNaoAutenticado(res, e);
 
     const msg = e instanceof Error ? e.message : String(e);
-    console.error('[nexo-ai] erro:', msg);
+    const httpStatus = e instanceof ErroModelo ? e.status : 500;
+    console.error('[nexo-ai] erro:', { status: httpStatus, codigo: e instanceof ErroModelo ? e.codigo : undefined, msg });
 
     if (e instanceof ErroModelo) {
-      const billingKeywords = ['credit balance', 'billing', 'payment required', 'quota'];
+      // 429 rate limit — temporário, não é falha de configuração.
+      if (e.status === 429 || e.codigo === 'quota') {
+        return res.status(429).json({
+          ok: false,
+          erro: 'A NEXO AI está recebendo muitas requisições no momento. Aguarde alguns segundos e tente novamente.',
+          codigo: 'rate_limit',
+        });
+      }
+
+      // 401 / 403 — problema de autenticação com o modelo.
+      if (e.status === 401 || e.status === 403) {
+        return res.status(502).json({
+          ok: false,
+          erro: 'Problema de autenticação com a API do modelo. Avise o administrador.',
+          codigo: 'modelo_auth',
+        });
+      }
+
+      // Billing real: cobrança ou crédito esgotado (não é rate limit).
+      const billingKeywords = ['credit balance', 'billing', 'payment required'];
       const isBilling = billingKeywords.some((k) => msg.toLowerCase().includes(k));
       if (isBilling) {
         return res.status(502).json({
@@ -169,6 +189,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           codigo: 'modelo_billing',
         });
       }
+
       return res.status(e.status >= 400 && e.status < 600 ? e.status : 500).json({
         ok: false,
         erro: 'O modelo de IA não conseguiu responder. Tente novamente em instantes.',
