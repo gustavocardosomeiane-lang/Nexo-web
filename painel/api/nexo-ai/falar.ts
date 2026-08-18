@@ -43,11 +43,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ ok: false, erro: 'Método não permitido.' });
   }
 
+  const tInicio = Date.now();
   try {
     await autenticar(req);
   } catch (e) {
     return responderNaoAutenticado(res, e);
   }
+  console.log('[NEXO LATENCIA] auth /falar', Date.now() - tInicio, 'ms');
 
   const key = (process.env.GEMINI_API_KEY ?? '').trim();
   if (!key) return res.status(503).json({ ok: false, erro: 'TTS não configurado.' });
@@ -57,6 +59,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!texto) return res.status(400).json({ ok: false, erro: 'Texto vazio.' });
 
   try {
+    const tTts = Date.now();
     const resposta = await fetch(
       `${GEMINI_BASE}/${MODELO_TTS}:generateContent?key=${encodeURIComponent(key)}`,
       {
@@ -75,6 +78,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     const dados = (await resposta.json().catch(() => null)) as Record<string, unknown> | null;
+    console.log('[NEXO LATENCIA] TTS', Date.now() - tTts, 'ms');
     if (!resposta.ok || !dados) {
       console.error('[nexo-ai/tts]', resposta.status, dados);
       return res.status(502).json({ ok: false, erro: 'Não foi possível gerar a voz.' });
@@ -97,6 +101,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.setHeader('Content-Type', 'audio/wav');
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Content-Length', String(wav.length));
+    console.log('[NEXO LATENCIA] total /falar', Date.now() - tInicio, 'ms');
     return res.status(200).send(wav);
   } catch (e) {
     console.error('[nexo-ai/tts] falha', e);

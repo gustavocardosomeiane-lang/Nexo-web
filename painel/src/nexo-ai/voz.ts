@@ -57,6 +57,8 @@ class VozGemini implements ProvedorVoz {
   private fonteAtual: AudioBufferSourceNode | null = null;
   private falando = false;
   private temporizadorSilencio: ReturnType<typeof setTimeout> | null = null;
+  /** Cancela a sessão de escuta ativa sem disparar aoFinal — usado por pararEscuta(). */
+  private cancelarEscutaAtual: (() => void) | null = null;
 
   get podeFalar(): boolean {
     return typeof window !== 'undefined' && ('AudioContext' in window || 'webkitAudioContext' in (window as unknown as Record<string, unknown>));
@@ -164,6 +166,7 @@ class VozGemini implements ProvedorVoz {
 
     let acumulado = '';
     let parcialAtual = '';
+    let indiceProcessado = 0;
     let houveErro = false;
     let finalizado = false;
 
@@ -174,33 +177,65 @@ class VozGemini implements ProvedorVoz {
       }
     };
 
+    const limparReferencias = () => {
+      cancelarTemporizador();
+      if (this.reconhecimento === rec) this.reconhecimento = null;
+      if (this.cancelarEscutaAtual === cancelarSemEnviar) this.cancelarEscutaAtual = null;
+    };
+
     const concluir = () => {
+      cancelarTemporizador();
+      if (finalizado) {
+        console.log('[NEXO MIC] concluir: ja finalizado, ignorado');
+        return;
+      }
+      finalizado = true;
+      const texto = `${acumulado} ${parcialAtual}`.trim();
+      console.log('[NEXO MIC] concluir', { texto, acumulado, parcialAtual, houveErro });
+      limparReferencias();
+      try { rec.stop(); } catch {}
+      if (texto && !houveErro) {
+        console.log('[NEXO MIC] aoFinal', texto);
+        cb.aoFinal?.(texto);
+      }
+    };
+
+    const cancelarSemEnviar = () => {
+      console.log('[NEXO MIC] cancelarSemEnviar (pararEscuta chamado)');
       cancelarTemporizador();
       if (finalizado) return;
       finalizado = true;
-      const texto = acumulado.trim() || parcialAtual.trim();
-      try { rec.stop(); } catch {}
-      this.reconhecimento = null;
-      if (texto && !houveErro) cb.aoFinal?.(texto);
+      limparReferencias();
+      try { rec.stop(); } catch { try { rec.abort(); } catch {} }
     };
+    this.cancelarEscutaAtual = cancelarSemEnviar;
 
     const programarEnvio = () => {
       cancelarTemporizador();
-      this.temporizadorSilencio = setTimeout(concluir, 800);
+      console.log('[NEXO MIC] timer scheduled');
+      this.temporizadorSilencio = setTimeout(() => {
+        console.log('[NEXO MIC] timer fired');
+        concluir();
+      }, 800);
     };
 
     rec.onresult = (e) => {
+      if (finalizado) return;
       let parcial = '';
-      let novosFinais = '';
-      const inicio = Math.max(0, e.results.length - 3);
-      for (let i = inicio; i < e.results.length; i++) {
+      for (let i = indiceProcessado; i < e.results.length; i++) {
         const r = e.results[i]!;
         const txt = r[0]?.transcript ?? '';
-        if (r.isFinal) novosFinais += `${txt} `;
-        else parcial += `${txt} `;
+        if (r.isFinal) {
+          acumulado = `${acumulado} ${txt}`.trim();
+          indiceProcessado = i + 1;
+        } else {
+          parcial += `${txt} `;
+        }
       }
-      if (novosFinais.trim()) acumulado = `${acumulado} ${novosFinais.trim()}`.trim();
       parcialAtual = parcial.trim();
+      console.log('[NEXO MIC] onresult');
+      console.log('[NEXO MIC] acumulado:', acumulado);
+      console.log('[NEXO MIC] parcialAtual:', parcialAtual);
       const visivel = `${acumulado} ${parcialAtual}`.trim();
       if (visivel) {
         cb.aoParcial?.(visivel);
@@ -209,7 +244,14 @@ class VozGemini implements ProvedorVoz {
     };
 
     rec.onerror = (e) => {
+      console.log('[NEXO MIC] onerror', e.error);
       if (e.error === 'no-speech') return;
+      if (finalizado) return;
+      const textoValido = `${acumulado} ${parcialAtual}`.trim();
+      if (textoValido) {
+        concluir();
+        return;
+      }
       houveErro = true;
       cancelarTemporizador();
       const erros: Record<string, string> = {
@@ -224,18 +266,26 @@ class VozGemini implements ProvedorVoz {
     };
 
     rec.onend = () => {
+      console.log('[NEXO MIC] onend', { finalizado, acumulado, parcialAtual, houveErro });
       cancelarTemporizador();
-      this.reconhecimento = null;
-      if (!finalizado && !houveErro && (acumulado.trim() || parcialAtual.trim())) concluir();
+      if (this.reconhecimento === rec) this.reconhecimento = null;
+      if (!finalizado && (acumulado.trim() || parcialAtual.trim())) {
+        concluir();
+      } else if (!finalizado) {
+        finalizado = true;
+        if (this.cancelarEscutaAtual === cancelarSemEnviar) this.cancelarEscutaAtual = null;
+      }
       cb.aoFim?.();
     };
 
     this.reconhecimento = rec;
 
     try {
+      console.log('[NEXO MIC] start');
       rec.start();
     } catch {
       this.reconhecimento = null;
+      if (this.cancelarEscutaAtual === cancelarSemEnviar) this.cancelarEscutaAtual = null;
       cancelarTemporizador();
       cb.aoErro?.('Não foi possível iniciar a escuta. Tente clicar novamente no microfone.');
       cb.aoFim?.();
@@ -243,6 +293,11 @@ class VozGemini implements ProvedorVoz {
   }
 
   pararEscuta(): void {
+    console.log('[NEXO MIC] pararEscuta chamado');
+    if (this.cancelarEscutaAtual) {
+      this.cancelarEscutaAtual();
+      return;
+    }
     if (this.temporizadorSilencio) {
       clearTimeout(this.temporizadorSilencio);
       this.temporizadorSilencio = null;
