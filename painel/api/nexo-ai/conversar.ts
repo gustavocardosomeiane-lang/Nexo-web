@@ -270,9 +270,14 @@ async function salvarTurno(
   pergunta: string,
   resposta: string,
 ): Promise<void> {
-  await db.from('ai_messages').insert([
-    { conversa_id: conversaId, papel: 'user', conteudo: pergunta },
-    { conversa_id: conversaId, papel: 'assistant', conteudo: resposta },
+  // As duas escritas não dependem uma da outra — tabelas diferentes, nenhuma
+  // lê o resultado da outra — então rodam em paralelo. Ambas ainda são
+  // aguardadas antes de responder ao cliente; só a ordem de execução muda.
+  await Promise.all([
+    db.from('ai_messages').insert([
+      { conversa_id: conversaId, papel: 'user', conteudo: pergunta },
+      { conversa_id: conversaId, papel: 'assistant', conteudo: resposta },
+    ]),
+    db.from('ai_conversations').update({ atualizado_em: new Date().toISOString() }).eq('id', conversaId),
   ]);
-  await db.from('ai_conversations').update({ atualizado_em: new Date().toISOString() }).eq('id', conversaId);
 }

@@ -35,7 +35,7 @@ export function useNexoAI(): UseNexoAI {
     const v = voz.current;
     if (!v || !vozLigadaRef.current || !v.podeFalar) { setEstado('idle'); return; }
     irPara('speaking');
-    v.falar(texto, { aoNivel: setNivelVoz, aoTerminar: () => { setNivelVoz(0); setEstado('idle'); }, aoErro: () => { setNivelVoz(0); setEstado('idle'); } });
+    v.falar(texto, { aoNivel: setNivelVoz, aoTerminar: () => { setNivelVoz(0); setEstado('idle'); }, aoErro: (motivo) => { setNivelVoz(0); setErro(motivo); setEstado('idle'); } });
   }, [irPara]);
 
   const enviar = useCallback(async (texto: string) => {
