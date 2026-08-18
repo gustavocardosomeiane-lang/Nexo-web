@@ -622,6 +622,69 @@ export const geminiProvider: ModeloProvider =
   };
 
 /* ==========================================================================
+   FALLBACK POR QUOTA — Gemini continua sendo o provedor principal.
+
+   Anthropic só entra quando o Gemini recusa por LIMITE (429 / quota /
+   RESOURCE_EXHAUSTED / overloaded / rate limit), nunca por outro motivo
+   (prompt inválido, bloqueio de conteúdo, etc. continuam sendo erro real).
+   Depende apenas de NEXO_AI_API_KEY já estar configurada — nenhuma chave
+   nova é criada aqui.
+   ========================================================================== */
+
+/** `true` quando o erro do modelo indica limite/quota, não uma falha real. */
+function ehErroDeQuotaOuLimite(e: unknown): boolean {
+  if (!(e instanceof ErroModelo)) return false;
+  if (e.status === 429) return true;
+  const msg = e.message.toLowerCase();
+  return (
+    msg.includes('quota') ||
+    msg.includes('resource_exhausted') ||
+    msg.includes('overloaded') ||
+    msg.includes('rate limit') ||
+    msg.includes('rate-limit')
+  );
+}
+
+/**
+ * Conversa com fallback: Gemini primeiro, sempre. Anthropic só assume esta
+ * ÚNICA resposta se o Gemini falhar especificamente por limite/quota E a
+ * NEXO_AI_API_KEY já estiver configurada. Qualquer outro erro do Gemini
+ * (ou um erro do Anthropic no fallback) sobe como erro real — sem inventar
+ * resposta da NEXO.
+ */
+export async function conversarComFallback(
+  pedido: PedidoModelo
+): Promise<RespostaModelo> {
+  const geminiConfigurado = geminiProvider.configurado;
+  const anthropicConfigurado = anthropicProvider.configurado;
+
+  if (geminiConfigurado) {
+    try {
+      return await geminiProvider.conversar(pedido);
+    } catch (e) {
+      if (ehErroDeQuotaOuLimite(e) && anthropicConfigurado) {
+        console.warn(
+          '[NEXO AI] Gemini recusou por limite/quota — usando fallback Anthropic só para esta resposta:',
+          e instanceof Error ? e.message : e,
+        );
+        return await anthropicProvider.conversar(pedido);
+      }
+      throw e;
+    }
+  }
+
+  if (anthropicConfigurado) {
+    return await anthropicProvider.conversar(pedido);
+  }
+
+  throw new ErroModelo(
+    'Nenhum provedor de IA está configurado no servidor.',
+    500,
+    'nenhum_provedor'
+  );
+}
+
+/* ==========================================================================
    PROVIDER ATIVO
    ========================================================================== */
 

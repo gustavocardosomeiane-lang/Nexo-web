@@ -5,6 +5,15 @@ import { Icon } from '@/components/ui/Icon';
 import { useNexoAI } from '@/nexo-ai/useNexoAI';
 import { Orbe } from '@/nexo-ai/Orbe';
 
+type EstadoMic = 'idle' | 'ouvindo' | 'processando' | 'erro';
+
+const TITULO_MIC: Record<EstadoMic, string> = {
+  idle: 'Falar com a NEXO',
+  ouvindo: 'Parar de ouvir',
+  processando: 'A NEXO está processando…',
+  erro: 'Erro no microfone — toque para tentar de novo',
+};
+
 export function NexoAI() {
   const ai = useNexoAI();
   const [texto, setTexto] = useState('');
@@ -15,6 +24,17 @@ export function NexoAI() {
     setTexto('');
     void ai.enviar(t);
   };
+
+  const estadoMic: EstadoMic =
+    ai.estado === 'listening'
+      ? 'ouvindo'
+      : ai.estado === 'thinking' || ai.estado === 'responding' || ai.estado === 'speaking'
+        ? 'processando'
+        : ai.erro
+          ? 'erro'
+          : 'idle';
+  const micDesabilitado = !ai.podeOuvir || estadoMic === 'processando';
+  const tituloMic = !ai.podeOuvir ? 'Microfone não disponível neste navegador' : TITULO_MIC[estadoMic];
 
   return (
     <div className="nexo-ai">
@@ -58,13 +78,22 @@ export function NexoAI() {
 
         <button
           type="button"
-          className={`nexo-ai-btn ${ai.estado === 'listening' ? 'ativo escutando' : ''}`}
+          className={[
+            'nexo-ai-btn',
+            'nexo-ai-mic',
+            estadoMic === 'ouvindo' ? 'ativo escutando' : '',
+            estadoMic === 'processando' ? 'processando' : '',
+            estadoMic === 'erro' ? 'erro' : '',
+          ]
+            .filter(Boolean)
+            .join(' ')}
           onClick={ai.alternarEscuta}
-          title={ai.estado === 'listening' ? 'Parar de ouvir' : 'Falar com a NEXO'}
-          aria-label={ai.estado === 'listening' ? 'Parar de ouvir' : 'Falar com a NEXO'}
-          aria-pressed={ai.estado === 'listening'}
+          disabled={micDesabilitado}
+          title={tituloMic}
+          aria-label={tituloMic}
+          aria-pressed={estadoMic === 'ouvindo'}
         >
-          <Icon nome="microfone" tamanho={20} />
+          <Icon nome="microfone" tamanho={24} />
         </button>
 
         <button

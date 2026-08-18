@@ -203,6 +203,33 @@
 .nexo-ai-btn.ativo { background: var(--ne-vermelho); color: #fff; box-shadow: 0 0 0 4px var(--ne-tint); }
 .nexo-ai-btn.escutando { animation: ne-pulsa 1.2s ease-in-out infinite; }
 
+/* Microfone: mesmo vocabulário visual do resto (preto + vermelho), só maior
+   e redondo, para ficar inconfundível como o controle principal de voz.
+   Escopado a `.nexo-ai-mic` para não afetar o botão de voz nem o de enviar. */
+.nexo-ai-mic {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--r-full, 999px);
+}
+.nexo-ai-mic:disabled { opacity: 0.4; cursor: not-allowed; transform: none; animation: none; }
+/* Processando: a NEXO já está com a mensagem, o mic fica visivelmente fora
+   de ação até voltar a idle — evita reabrir escuta por cima de uma resposta
+   em andamento. */
+.nexo-ai-mic.processando { opacity: 0.4; cursor: not-allowed; }
+/* Erro: mesma paleta de vermelho do resto do componente, sem cor nova —
+   só um aceno rápido para chamar atenção, sem virar alarme piscando. */
+.nexo-ai-mic.erro {
+  border-color: var(--ne-vermelho);
+  color: var(--ne-vermelho);
+  background: var(--ne-tint);
+  animation: ne-mic-erro 0.35s var(--ease, ease);
+}
+@keyframes ne-mic-erro {
+  0%, 100% { transform: translateX(0); }
+  30% { transform: translateX(-3px); }
+  70% { transform: translateX(3px); }
+}
+
 /* ---------------------------------------------------------------------------
    RESPONSIVO
    --------------------------------------------------------------------------- */
@@ -214,7 +241,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .nexo-ai-bolha, .nexo-ai-btn.escutando {
+  .nexo-ai-bolha, .nexo-ai-btn.escutando, .nexo-ai-mic.erro {
     animation: none !important;
   }
   /* O Canvas continua animando, só que bem mais devagar — ver o amortecedor
