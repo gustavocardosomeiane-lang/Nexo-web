@@ -58,7 +58,11 @@ export function useNexoAI(): UseNexoAI {
   const alternarEscuta = useCallback(() => {
     const v = voz.current;
     if (!v?.podeOuvir) { setErro('Este navegador não reconhece voz. Use o teclado.'); return; }
-    if (estado === 'listening') { v.pararEscuta(); setEstado('idle'); return; }
+    // 2º clique durante 'listening' = finalizar e enviar, nunca cancelar. A
+    // transição de estado vem dos callbacks de ouvir() (aoFinal/aoFim), os
+    // mesmos que o timer de silêncio automático já usa — mesmo caminho para
+    // os dois casos, sem estado especial aqui.
+    if (estado === 'listening') { v.finalizarEscuta(); return; }
     v.pararFala(); setErro(null); setParcialEscuta(''); irPara('listening');
     v.ouvir({ aoParcial: setParcialEscuta, aoFinal: (t) => { setParcialEscuta(''); void enviar(t); }, aoErro: (motivo) => { setErro(motivo); setEstado((s) => (s === 'listening' ? 'idle' : s)); }, aoFim: () => setEstado((s) => (s === 'listening' ? 'idle' : s)) });
   }, [estado, enviar, irPara]);

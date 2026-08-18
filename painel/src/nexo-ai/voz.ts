@@ -3,7 +3,7 @@ import { getSupabase } from '@/data/supabase/client';
 
 export interface AoFalar { aoIniciar?: () => void; aoTerminar?: () => void; aoErro?: (motivo: string) => void; aoNivel?: (nivel: number) => void; }
 export interface AoOuvir { aoParcial?: (texto: string) => void; aoFinal?: (texto: string) => void; aoErro?: (motivo: string) => void; aoFim?: () => void; }
-export interface ProvedorVoz { readonly nome: string; readonly podeFalar: boolean; readonly podeOuvir: boolean; falar(texto: string, cb?: AoFalar): void; pararFala(): void; ouvir(cb?: AoOuvir): void; pararEscuta(): void; }
+export interface ProvedorVoz { readonly nome: string; readonly podeFalar: boolean; readonly podeOuvir: boolean; falar(texto: string, cb?: AoFalar): void; pararFala(): void; ouvir(cb?: AoOuvir): void; pararEscuta(): void; finalizarEscuta(): void; }
 
 interface ReconhecimentoFala extends EventTarget {
   lang: string;
@@ -59,6 +59,8 @@ class VozGemini implements ProvedorVoz {
   private temporizadorSilencio: ReturnType<typeof setTimeout> | null = null;
   /** Cancela a sessão de escuta ativa sem disparar aoFinal — usado por pararEscuta(). */
   private cancelarEscutaAtual: (() => void) | null = null;
+  /** Consolida e envia a sessão de escuta ativa — usado por finalizarEscuta() (2º clique no mic). */
+  private finalizarEscutaAtual: (() => void) | null = null;
 
   get podeFalar(): boolean {
     return typeof window !== 'undefined' && ('AudioContext' in window || 'webkitAudioContext' in (window as unknown as Record<string, unknown>));
@@ -181,6 +183,7 @@ class VozGemini implements ProvedorVoz {
       cancelarTemporizador();
       if (this.reconhecimento === rec) this.reconhecimento = null;
       if (this.cancelarEscutaAtual === cancelarSemEnviar) this.cancelarEscutaAtual = null;
+      if (this.finalizarEscutaAtual === concluir) this.finalizarEscutaAtual = null;
     };
 
     const concluir = () => {
@@ -209,6 +212,7 @@ class VozGemini implements ProvedorVoz {
       try { rec.stop(); } catch { try { rec.abort(); } catch {} }
     };
     this.cancelarEscutaAtual = cancelarSemEnviar;
+    this.finalizarEscutaAtual = concluir;
 
     const programarEnvio = () => {
       cancelarTemporizador();
@@ -274,6 +278,7 @@ class VozGemini implements ProvedorVoz {
       } else if (!finalizado) {
         finalizado = true;
         if (this.cancelarEscutaAtual === cancelarSemEnviar) this.cancelarEscutaAtual = null;
+        if (this.finalizarEscutaAtual === concluir) this.finalizarEscutaAtual = null;
       }
       cb.aoFim?.();
     };
@@ -286,12 +291,18 @@ class VozGemini implements ProvedorVoz {
     } catch {
       this.reconhecimento = null;
       if (this.cancelarEscutaAtual === cancelarSemEnviar) this.cancelarEscutaAtual = null;
+      if (this.finalizarEscutaAtual === concluir) this.finalizarEscutaAtual = null;
       cancelarTemporizador();
       cb.aoErro?.('Não foi possível iniciar a escuta. Tente clicar novamente no microfone.');
       cb.aoFim?.();
     }
   }
 
+  /**
+   * Cancelamento real: descarta a escuta ativa sem enviar nada. Uso: cleanup
+   * de unmount e qualquer ação explícita de cancelar — NUNCA a ação do botão
+   * de microfone durante 'listening' (isso é finalizarEscuta()).
+   */
   pararEscuta(): void {
     console.log('[NEXO MIC] pararEscuta chamado');
     if (this.cancelarEscutaAtual) {
@@ -306,6 +317,21 @@ class VozGemini implements ProvedorVoz {
       try { this.reconhecimento.stop(); } catch { try { this.reconhecimento.abort(); } catch {} }
       this.reconhecimento = null;
     }
+  }
+
+  /**
+   * Fallback manual: consolida acumulado + parcial da escuta ativa e dispara
+   * aoFinal — a mesma rota que o timer de silêncio/onend usam, então nunca
+   * duplica envio nem descarta texto. É o que o 2º clique no microfone chama.
+   * Sem sessão ativa, não faz nada (não há o que finalizar).
+   */
+  finalizarEscuta(): void {
+    console.log('[NEXO MIC] finalizarEscuta chamado');
+    if (this.finalizarEscutaAtual) {
+      this.finalizarEscutaAtual();
+      return;
+    }
+    console.log('[NEXO MIC] finalizarEscuta: nenhuma sessao ativa');
   }
 }
 

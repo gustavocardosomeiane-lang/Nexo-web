@@ -9,9 +9,19 @@ type EstadoMic = 'idle' | 'ouvindo' | 'processando' | 'erro';
 
 const TITULO_MIC: Record<EstadoMic, string> = {
   idle: 'Falar com a NEXO',
-  ouvindo: 'Parar de ouvir',
+  ouvindo: 'Finalizar e enviar',
   processando: 'A NEXO está processando…',
   erro: 'Erro no microfone — toque para tentar de novo',
+};
+
+/* Durante a escuta o botão troca para o ícone de enviar — reaproveitado do
+   botão "enviar" já existente — para deixar claro que o 2º clique finaliza
+   e envia, nunca cancela a escuta sem mandar o texto. */
+const ICONE_MIC: Record<EstadoMic, 'microfone' | 'enviar'> = {
+  idle: 'microfone',
+  ouvindo: 'enviar',
+  processando: 'microfone',
+  erro: 'microfone',
 };
 
 export function NexoAI() {
@@ -93,7 +103,7 @@ export function NexoAI() {
           aria-label={tituloMic}
           aria-pressed={estadoMic === 'ouvindo'}
         >
-          <Icon nome="microfone" tamanho={24} />
+          <Icon nome={ICONE_MIC[estadoMic]} tamanho={24} />
         </button>
 
         <button
