@@ -23,7 +23,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { autenticar, responderNaoAutenticado, NaoAutenticado } from '../_lib/auth.js';
-import { provedorAtivo, conversarComFallback, ErroModelo, type MensagemModelo } from '../_lib/nexo-ai/modelo.js';
+import { provedorAtivo, ErroModelo, type MensagemModelo } from '../_lib/nexo-ai/modelo.js';
 import {
   definicoesDe,
   executarFerramenta,
@@ -107,7 +107,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!modelo.configurado) {
     return res.status(503).json({
       ok: false,
-      erro: 'NEXO AI ainda não configurada: falta NEXO_AI_API_KEY no servidor.',
+      erro: 'NEXO AI ainda não configurada: falta GROQ_API_KEY no servidor.',
       codigo: 'sem_credencial',
     });
   }
@@ -180,11 +180,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     /* ---- Exatamente uma chamada ao modelo por mensagem do usuário.
-       Gemini é sempre a primeira tentativa; só cai para Anthropic se o
-       Gemini recusar por limite/quota E a NEXO_AI_API_KEY já estiver
-       configurada (ver conversarComFallback em modelo.ts). ---- */
+       Groq (openai/gpt-oss-20b) é o único provedor de texto — ver modelo.ts. ---- */
     const tModelo = Date.now();
-    const resposta = await conversarComFallback({
+    const resposta = await modelo.conversar({
       sistema: sistemaComDados,
       mensagens,
       maxTokensSaida: 512,
@@ -212,7 +210,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.error('[nexo-ai] erro:', msg);
 
     if (e instanceof ErroModelo) {
-      const billingKeywords = ['credit balance', 'billing', 'payment required', 'quota'];
+      // 'quota' saiu daqui: sem fallback, um 429 do Groq é limite transitório
+      // ("tente de novo"), não problema de configuração do servidor.
+      const billingKeywords = ['credit balance', 'billing', 'payment required'];
       const isBilling = billingKeywords.some((k) => msg.toLowerCase().includes(k));
       if (isBilling) {
         return res.status(502).json({
@@ -223,7 +223,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
       return res.status(e.status >= 400 && e.status < 600 ? e.status : 500).json({
         ok: false,
-        erro: 'O modelo de IA não conseguiu responder. Tente novamente em instantes.',
+        erro: 'A NEXO está temporariamente indisponível. Tente novamente em alguns instantes.',
         codigo: e.codigo ?? 'modelo_erro',
       });
     }

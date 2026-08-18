@@ -1,13 +1,13 @@
 /**
- * Camada de MODELO da NEXO AI
+ * Camada de MODELO da NEXO AI — geração de TEXTO.
  *
- * Provider principal:
- *   Google Gemini
+ * Provider único:
+ *   Groq (openai/gpt-oss-20b)
  *
- * Fallback:
- *   Anthropic
+ * A chave fica exclusivamente no servidor (GROQ_API_KEY).
  *
- * As chaves ficam exclusivamente no servidor.
+ * O TTS (voz da NEXO) é INDEPENDENTE deste arquivo — continua em
+ * api/nexo-ai/falar.ts, usando Gemini (GEMINI_API_KEY). Nada aqui afeta a voz.
  */
 
 export interface MensagemModelo {
@@ -70,671 +70,181 @@ export class ErroModelo extends Error {
 }
 
 /* ==========================================================================
-   ANTHROPIC — FALLBACK
+   GROQ — PROVIDER ÚNICO DE TEXTO
+
+   Endpoint OpenAI-compatível. A chave (GROQ_API_KEY) já está configurada na
+   Vercel — este arquivo só lê process.env.GROQ_API_KEY, nunca um literal.
    ========================================================================== */
 
-const ANTHROPIC_BASE =
-  'https://api.anthropic.com/v1/messages';
+const GROQ_BASE = 'https://api.groq.com/openai/v1/chat/completions';
 
-const ANTHROPIC_VERSION = '2023-06-01';
+/** Fixo por decisão de produto — NÃO usar llama-3.1-8b-instant. */
+const GROQ_MODELO = 'openai/gpt-oss-20b';
 
-function modeloAnthropic(): string {
-  return (
-    process.env.NEXO_AI_MODELO ??
-    'claude-sonnet-5'
-  ).trim() || 'claude-sonnet-5';
-}
+/** Sem isso, uma chamada travada no Groq nunca solta a requisição do usuário. */
+const GROQ_TIMEOUT_MS = 20000;
 
-function chaveAnthropic(): string {
-  const key = (
-    process.env.NEXO_AI_API_KEY ?? ''
-  ).trim();
-
+function chaveGroq(): string {
+  const key = (process.env.GROQ_API_KEY ?? '').trim();
   if (!key) {
-    throw new ErroModelo(
-      'NEXO_AI_API_KEY não configurada no servidor.',
-      500,
-      'sem_credencial'
-    );
+    throw new ErroModelo('GROQ_API_KEY não configurada no servidor.', 500, 'sem_credencial');
   }
-
   return key;
 }
 
-function montarCorpoAnthropic(
-  pedido: PedidoModelo
-) {
-  const mensagens = pedido.mensagens.map((m) => ({
-    role:
-      m.papel === 'assistant'
-        ? 'assistant'
-        : 'user',
-    content: m.conteudo,
-  }));
+interface MensagemGroq {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+interface ToolCallGroq {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
+
+function montarCorpoGroq(pedido: PedidoModelo): Record<string, unknown> {
+  const mensagens: MensagemGroq[] = [];
+
+  if (pedido.sistema && pedido.sistema.trim()) {
+    mensagens.push({ role: 'system', content: pedido.sistema });
+  }
+
+  for (const m of pedido.mensagens) {
+    const conteudo = m.conteudo.trim();
+    if (!conteudo) continue;
+    mensagens.push({ role: m.papel === 'assistant' ? 'assistant' : 'user', content: conteudo });
+  }
+
+  /*
+   * `resultados` não vem de um ciclo real de function-calling do Groq — hoje
+   * as ferramentas da NEXO são resolvidas ANTES desta chamada, em
+   * conversar.ts, e injetadas como texto no `sistema` (ver "DADO REAL —" em
+   * conversar.ts). Sem um assistant.tool_calls[] anterior com o mesmo id
+   * nesta mesma lista de mensagens, a API da Groq rejeita role:"tool" com
+   * 400 (tool_call_id sem correspondência). Por isso, se `resultados` vier
+   * preenchido, ele entra como contexto comum — não como role:"tool" — até
+   * existir de fato um loop de function-calling (tool_calls → execução →
+   * role:"tool" → nova chamada), que este provider não implementa.
+   */
+  if (pedido.resultados?.length) {
+    const contexto = pedido.resultados
+      .map((r) => `Resultado da ferramenta ${r.id}: ${r.conteudo}`)
+      .join('\n');
+    mensagens.push({ role: 'user', content: contexto });
+  }
 
   const corpo: Record<string, unknown> = {
-    model: modeloAnthropic(),
-    max_tokens:
-      pedido.maxTokensSaida ?? 1024,
-    system: pedido.sistema,
+    model: GROQ_MODELO,
     messages: mensagens,
+    max_tokens: pedido.maxTokensSaida ?? 512,
+    /*
+     * gpt-oss é um modelo de raciocínio: sem isso ele pensa em nível "medium"
+     * por padrão, gastando tokens invisíveis antes da resposta — o mesmo
+     * motivo pelo qual o Gemini usava thinkingLevel "LOW". "low" é o nível
+     * mínimo aceito pela Groq para esta família de modelo.
+     */
+    reasoning_effort: 'low',
   };
 
   if (pedido.ferramentas?.length) {
-    corpo.tools =
-      pedido.ferramentas.map((f) => ({
-        name: f.nome,
-        description: f.descricao,
-        input_schema: f.parametros,
-      }));
-  }
-
-  if (pedido.resultados?.length) {
-    mensagens.push({
-      role: 'user',
-      content: pedido.resultados
-        .map((r) => ({
-          type: 'text',
-          text: `Resultado da ferramenta ${r.id}: ${r.conteudo}`,
-        }))
-        .map((x) => x.text)
-        .join('\n'),
-    });
+    corpo.tools = pedido.ferramentas.map((f) => ({
+      type: 'function',
+      function: { name: f.nome, description: f.descricao, parameters: f.parametros },
+    }));
   }
 
   return corpo;
 }
 
-function lerRespostaAnthropic(
-  dados: Record<string, unknown>
-): RespostaModelo {
-  const blocos = Array.isArray(dados.content)
-    ? dados.content
-    : [];
-
-  let texto = '';
-
-  const chamadas: ChamadaFerramenta[] = [];
-
-  for (const bloco of blocos as Record<
-    string,
-    unknown
-  >[]) {
-    if (
-      bloco.type === 'text' &&
-      typeof bloco.text === 'string'
-    ) {
-      texto += bloco.text;
-    }
-
-    if (bloco.type === 'tool_use') {
-      chamadas.push({
-        id: String(bloco.id),
-        nome: String(bloco.name),
-        argumentos:
-          (bloco.input as Record<
-            string,
-            unknown
-          >) ?? {},
-      });
-    }
+function lerRespostaGroq(dados: Record<string, unknown>): RespostaModelo {
+  const choices = Array.isArray(dados.choices) ? dados.choices : [];
+  if (!choices.length) {
+    throw new ErroModelo('O Groq não retornou uma resposta.', 500, 'sem_resposta');
   }
 
-  const uso =
-    (dados.usage as Record<
-      string,
-      number
-    >) ?? {};
+  const primeira = choices[0] as Record<string, unknown>;
+  const mensagem = primeira?.message as Record<string, unknown> | undefined;
+  const texto = typeof mensagem?.content === 'string' ? mensagem.content : '';
+
+  const toolCallsBrutas = Array.isArray(mensagem?.tool_calls) ? (mensagem.tool_calls as ToolCallGroq[]) : [];
+  const chamadas: ChamadaFerramenta[] = toolCallsBrutas.map((tc) => {
+    let argumentos: Record<string, unknown> = {};
+    try {
+      argumentos = JSON.parse(tc.function?.arguments ?? '{}') as Record<string, unknown>;
+    } catch {
+      argumentos = {};
+    }
+    return { id: tc.id, nome: tc.function?.name ?? '', argumentos };
+  });
+
+  const uso = (dados.usage as Record<string, number>) ?? {};
 
   return {
     texto: texto.trim(),
     chamadas,
     tokens: {
-      entrada:
-        uso.input_tokens ?? 0,
-      saida:
-        uso.output_tokens ?? 0,
+      entrada: uso.prompt_tokens ?? 0,
+      saida: uso.completion_tokens ?? 0,
     },
   };
 }
 
-export const anthropicProvider: ModeloProvider = {
-  nome: 'anthropic',
+export const groqProvider: ModeloProvider = {
+  nome: 'groq',
 
   get configurado() {
-    return Boolean(
-      (
-        process.env.NEXO_AI_API_KEY ?? ''
-      ).trim()
-    );
+    return Boolean((process.env.GROQ_API_KEY ?? '').trim());
   },
 
-  async conversar(
-    pedido: PedidoModelo
-  ): Promise<RespostaModelo> {
-    let resposta: Response;
+  async conversar(pedido: PedidoModelo): Promise<RespostaModelo> {
+    const key = chaveGroq();
 
+    const controlador = new AbortController();
+    const timeoutId = setTimeout(() => controlador.abort(), GROQ_TIMEOUT_MS);
+
+    let resposta: Response;
     try {
-      resposta = await fetch(
-        ANTHROPIC_BASE,
-        {
-          method: 'POST',
-          headers: {
-            'content-type':
-              'application/json',
-            'x-api-key':
-              chaveAnthropic(),
-            'anthropic-version':
-              ANTHROPIC_VERSION,
-          },
-          body: JSON.stringify(
-            montarCorpoAnthropic(pedido)
-          ),
-        }
-      );
-    } catch {
+      resposta = await fetch(GROQ_BASE, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${key}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(montarCorpoGroq(pedido)),
+        signal: controlador.signal,
+      });
+    } catch (e) {
+      const timeout = e instanceof Error && e.name === 'AbortError';
+      console.error('[NEXO AI] Groq erro:', timeout ? 'tempo limite excedido' : 'falha de rede');
       throw new ErroModelo(
-        'Não foi possível alcançar o modelo de IA.',
-        502,
-        'rede'
+        timeout ? 'Tempo limite excedido ao contatar o Groq.' : 'Não foi possível alcançar a API do Groq.',
+        timeout ? 504 : 502,
+        timeout ? 'timeout' : 'rede',
       );
+    } finally {
+      clearTimeout(timeoutId);
     }
 
-    const dados =
-      (await resposta
-        .json()
-        .catch(() => null)) as Record<
-        string,
-        unknown
-      > | null;
+    const dados = (await resposta.json().catch(() => null)) as Record<string, unknown> | null;
 
     if (!resposta.ok || !dados) {
-      const erro =
-        dados?.error as
-          | {
-              message?: string;
-            }
-          | undefined;
-
-      const detalhe =
-        erro?.message ??
-        `O modelo respondeu ${resposta.status}.`;
-
-      throw new ErroModelo(
-        detalhe,
-        resposta.status,
-        'modelo_recusou'
-      );
+      const erro = dados?.error as { message?: string } | undefined;
+      const detalhe = erro?.message ?? `Groq respondeu ${resposta.status}.`;
+      console.error('[NEXO AI] Groq erro:', resposta.status, detalhe);
+      throw new ErroModelo(detalhe, resposta.status, 'groq_recusou');
     }
 
-    return lerRespostaAnthropic(dados);
+    console.log('[NEXO AI] Groq respondeu com sucesso:', GROQ_MODELO);
+    return lerRespostaGroq(dados);
   },
 };
 
 /* ==========================================================================
-   GOOGLE GEMINI — PROVIDER PRINCIPAL
+   PROVIDER ATIVO — Groq é o único provider de texto.
    ========================================================================== */
 
-const GEMINI_BASE =
-  'https://generativelanguage.googleapis.com/v1beta/models';
-
-/**
- * Modelo principal da NEXO AI.
- *
- * IMPORTANTE:
- * Este é o modelo que foi testado manualmente
- * pelo terminal e respondeu:
- *
- * GEMINI OK
- */
-const GEMINI_MODELO = 'gemini-3.6-flash';
-
-function chaveGemini(): string {
-  const key = (
-    process.env.GEMINI_API_KEY ?? ''
-  ).trim();
-
-  if (!key) {
-    throw new ErroModelo(
-      'GEMINI_API_KEY não configurada no servidor.',
-      500,
-      'sem_credencial'
-    );
-  }
-
-  return key;
-}
-
-interface GeminiPart {
-  text?: string;
-
-  functionCall?: {
-    name: string;
-    args?: Record<string, unknown>;
-  };
-
-  functionResponse?: {
-    name: string;
-    response: Record<string, unknown>;
-  };
-}
-
-interface GeminiContent {
-  role: 'user' | 'model';
-  parts: GeminiPart[];
-}
-
-function montarCorpoGemini(
-  pedido: PedidoModelo
-) {
-  const contents: GeminiContent[] = [];
-
-  for (const mensagem of pedido.mensagens) {
-    const role =
-      mensagem.papel === 'assistant'
-        ? 'model'
-        : 'user';
-
-    const texto =
-      mensagem.conteudo.trim();
-
-    if (!texto) continue;
-
-    const ultimo =
-      contents[contents.length - 1];
-
-    if (ultimo && ultimo.role === role) {
-      ultimo.parts.push({
-        text: texto,
-      });
-    } else {
-      contents.push({
-        role,
-        parts: [
-          {
-            text: texto,
-          },
-        ],
-      });
-    }
-  }
-
-  /*
-   * Gemini exige que a conversa comece com USER.
-   */
-  if (
-    !contents.length ||
-    contents[0].role !== 'user'
-  ) {
-    contents.unshift({
-      role: 'user',
-      parts: [
-        {
-          text: 'Inicie a conversa.',
-        },
-      ],
-    });
-  }
-
-  const corpo: Record<string, unknown> = {
-    contents,
-
-    generationConfig: {
-      maxOutputTokens:
-        pedido.maxTokensSaida ?? 1024,
-      /*
-       * Sem isso, modelos Gemini 3.x pensam em nível "medium" por padrão —
-       * tokens de raciocínio invisíveis que competem pelo mesmo teto de
-       * maxOutputTokens e são a maior parte da latência percebida numa
-       * resposta de chat curta. "LOW" é o mínimo que a API aceita para
-       * Flash (não dá para desligar por completo nesta linha de modelo).
-       */
-      thinkingConfig: {
-        thinkingLevel: 'LOW',
-      },
-    },
-  };
-
-  /*
-   * Instrução de sistema.
-   */
-  if (
-    pedido.sistema &&
-    pedido.sistema.trim()
-  ) {
-    corpo.systemInstruction = {
-      parts: [
-        {
-          text: pedido.sistema,
-        },
-      ],
-    };
-  }
-
-  /*
-   * Ferramentas.
-   */
-  if (pedido.ferramentas?.length) {
-    corpo.tools = [
-      {
-        functionDeclarations:
-          pedido.ferramentas.map(
-            (f) => ({
-              name: f.nome,
-              description:
-                f.descricao,
-              parameters:
-                f.parametros,
-            })
-          ),
-      },
-    ];
-  }
-
-  return corpo;
-}
-
-function lerRespostaGemini(
-  dados: Record<string, unknown>
-): RespostaModelo {
-  const candidates =
-    Array.isArray(dados.candidates)
-      ? dados.candidates
-      : [];
-
-  if (!candidates.length) {
-    const feedback =
-      dados.promptFeedback as
-        | {
-            blockReason?: string;
-          }
-        | undefined;
-
-    if (feedback?.blockReason) {
-      throw new ErroModelo(
-        `Conteúdo bloqueado: ${feedback.blockReason}`,
-        400,
-        'conteudo_bloqueado'
-      );
-    }
-
-    throw new ErroModelo(
-      'O Gemini não retornou uma resposta.',
-      500,
-      'sem_resposta'
-    );
-  }
-
-  const primeiro =
-    candidates[0] as
-      | Record<string, unknown>
-      | undefined;
-
-  const content =
-    primeiro?.content as
-      | {
-          parts?: GeminiPart[];
-        }
-      | undefined;
-
-  const parts =
-    content?.parts ?? [];
-
-  let texto = '';
-
-  const chamadas: ChamadaFerramenta[] = [];
-
-  for (const part of parts) {
-    if (
-      typeof part.text === 'string'
-    ) {
-      texto += part.text;
-    }
-
-    if (part.functionCall) {
-      chamadas.push({
-        id:
-          part.functionCall.name,
-        nome:
-          part.functionCall.name,
-        argumentos:
-          part.functionCall.args ??
-          {},
-      });
-    }
-  }
-
-  const uso =
-    (dados.usageMetadata as Record<
-      string,
-      number
-    >) ?? {};
-
-  return {
-    texto: texto.trim(),
-    chamadas,
-    tokens: {
-      entrada:
-        uso.promptTokenCount ?? 0,
-      saida:
-        uso.candidatesTokenCount ?? 0,
-    },
-  };
-}
-
-export const geminiProvider: ModeloProvider =
-  {
-    nome: 'gemini',
-
-    get configurado() {
-      const key =
-        process.env.GEMINI_API_KEY;
-
-      return (
-        typeof key === 'string' &&
-        key.trim().length > 0
-      );
-    },
-
-    async conversar(
-      pedido: PedidoModelo
-    ): Promise<RespostaModelo> {
-      const key = chaveGemini();
-
-      const url =
-        `${GEMINI_BASE}/${GEMINI_MODELO}` +
-        `:generateContent?key=${encodeURIComponent(
-          key
-        )}`;
-
-      let resposta: Response;
-
-      try {
-        resposta = await fetch(
-          url,
-          {
-            method: 'POST',
-
-            headers: {
-              'content-type':
-                'application/json',
-            },
-
-            body: JSON.stringify(
-              montarCorpoGemini(pedido)
-            ),
-          }
-        );
-      } catch {
-        throw new ErroModelo(
-          'Não foi possível alcançar a API do Gemini.',
-          502,
-          'rede'
-        );
-      }
-
-      const dados =
-        (await resposta
-          .json()
-          .catch(() => null)) as Record<
-          string,
-          unknown
-        > | null;
-
-      if (!resposta.ok || !dados) {
-        const erro =
-          dados?.error as
-            | {
-                message?: string;
-                status?: string;
-              }
-            | undefined;
-
-        const detalhe =
-          erro?.message ??
-          `Gemini respondeu ${resposta.status}.`;
-
-        console.error(
-          '[NEXO AI] Gemini error:',
-          {
-            status:
-              resposta.status,
-            detalhe,
-          }
-        );
-
-        throw new ErroModelo(
-          detalhe,
-          resposta.status,
-          'gemini_recusou'
-        );
-      }
-
-      console.log(
-        '[NEXO AI] Gemini respondeu com sucesso:',
-        GEMINI_MODELO
-      );
-
-      return lerRespostaGemini(
-        dados
-      );
-    },
-  };
-
-/* ==========================================================================
-   FALLBACK POR QUOTA — Gemini continua sendo o provedor principal.
-
-   Anthropic só entra quando o Gemini recusa por LIMITE (429 / quota /
-   RESOURCE_EXHAUSTED / overloaded / rate limit), nunca por outro motivo
-   (prompt inválido, bloqueio de conteúdo, etc. continuam sendo erro real).
-   Depende apenas de NEXO_AI_API_KEY já estar configurada — nenhuma chave
-   nova é criada aqui.
-   ========================================================================== */
-
-/** `true` quando o erro do modelo indica limite/quota, não uma falha real. */
-function ehErroDeQuotaOuLimite(e: unknown): boolean {
-  if (!(e instanceof ErroModelo)) return false;
-  if (e.status === 429) return true;
-  const msg = e.message.toLowerCase();
-  return (
-    msg.includes('quota') ||
-    msg.includes('resource_exhausted') ||
-    msg.includes('overloaded') ||
-    msg.includes('rate limit') ||
-    msg.includes('rate-limit')
-  );
-}
-
-/**
- * Conversa com fallback: Gemini primeiro, sempre. Anthropic só assume esta
- * ÚNICA resposta se o Gemini falhar especificamente por limite/quota E a
- * NEXO_AI_API_KEY já estiver configurada. Qualquer outro erro do Gemini
- * (ou um erro do Anthropic no fallback) sobe como erro real — sem inventar
- * resposta da NEXO.
- */
-export async function conversarComFallback(
-  pedido: PedidoModelo
-): Promise<RespostaModelo> {
-  const geminiConfigurado = geminiProvider.configurado;
-  const anthropicConfigurado = anthropicProvider.configurado;
-
-  if (geminiConfigurado) {
-    try {
-      return await geminiProvider.conversar(pedido);
-    } catch (e) {
-      if (ehErroDeQuotaOuLimite(e) && anthropicConfigurado) {
-        console.warn(
-          '[NEXO AI] Gemini recusou por limite/quota — usando fallback Anthropic só para esta resposta:',
-          e instanceof Error ? e.message : e,
-        );
-        return await anthropicProvider.conversar(pedido);
-      }
-      throw e;
-    }
-  }
-
-  if (anthropicConfigurado) {
-    return await anthropicProvider.conversar(pedido);
-  }
-
-  throw new ErroModelo(
-    'Nenhum provedor de IA está configurado no servidor.',
-    500,
-    'nenhum_provedor'
-  );
-}
-
-/* ==========================================================================
-   PROVIDER ATIVO
-   ========================================================================== */
-
-/**
- * Gemini é SEMPRE prioridade quando GEMINI_API_KEY
- * está configurada.
- *
- * Anthropic só será usado se Gemini não estiver
- * configurado.
- */
 export function provedorAtivo(): ModeloProvider {
-  const geminiConfigurado =
-    geminiProvider.configurado;
-
-  const anthropicConfigurado =
-    anthropicProvider.configurado;
-
-  console.log(
-    '[NEXO AI] Provider Gemini:',
-    geminiConfigurado
-      ? 'CONFIGURADO'
-      : 'NÃO CONFIGURADO'
-  );
-
-  console.log(
-    '[NEXO AI] Provider Anthropic:',
-    anthropicConfigurado
-      ? 'CONFIGURADO'
-      : 'NÃO CONFIGURADO'
-  );
-
-  if (geminiConfigurado) {
-    console.log(
-      '[NEXO AI] PROVIDER ATIVO: GEMINI'
-    );
-
-    return geminiProvider;
-  }
-
-  if (anthropicConfigurado) {
-    console.log(
-      '[NEXO AI] PROVIDER ATIVO: ANTHROPIC'
-    );
-
-    return anthropicProvider;
-  }
-
-  throw new ErroModelo(
-    'Nenhum provedor de IA está configurado no servidor.',
-    500,
-    'nenhum_provedor'
-  );
+  console.log('[NEXO AI] Provider Groq:', groqProvider.configurado ? 'CONFIGURADO' : 'NÃO CONFIGURADO');
+  return groqProvider;
 }
