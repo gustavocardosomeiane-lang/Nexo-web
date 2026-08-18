@@ -382,6 +382,16 @@ function montarCorpoGemini(
     generationConfig: {
       maxOutputTokens:
         pedido.maxTokensSaida ?? 1024,
+      /*
+       * Sem isso, modelos Gemini 3.x pensam em nível "medium" por padrão —
+       * tokens de raciocínio invisíveis que competem pelo mesmo teto de
+       * maxOutputTokens e são a maior parte da latência percebida numa
+       * resposta de chat curta. "LOW" é o mínimo que a API aceita para
+       * Flash (não dá para desligar por completo nesta linha de modelo).
+       */
+      thinkingConfig: {
+        thinkingLevel: 'LOW',
+      },
     },
   };
 
