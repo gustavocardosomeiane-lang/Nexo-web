@@ -7,7 +7,8 @@
  * A chave fica exclusivamente no servidor (GROQ_API_KEY).
  *
  * O TTS (voz da NEXO) é INDEPENDENTE deste arquivo — continua em
- * api/nexo-ai/falar.ts, usando Gemini (GEMINI_API_KEY). Nada aqui afeta a voz.
+ * api/nexo-ai/falar.ts, usando ElevenLabs (ELEVENLABS_API_KEY). Nada aqui
+ * afeta a voz.
  */
 
 export interface MensagemModelo {

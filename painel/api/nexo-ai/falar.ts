@@ -2,9 +2,23 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { autenticar, responderNaoAutenticado } from '../_lib/auth.js';
 import { extrairRetryDelayMs, RETRY_MS_PADRAO } from '../../shared/regras-nexo-ai.js';
 
-const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-const MODELO_TTS = (process.env.NEXO_AI_TTS_MODELO ?? 'gemini-3.1-flash-tts-preview').trim();
-const VOZ_TTS = (process.env.NEXO_AI_TTS_VOZ ?? 'Kore').trim();
+/**
+ * NEXO AI — endpoint de voz (TTS).
+ *
+ *   POST /api/nexo-ai/falar   { texto }
+ *
+ * Provider: ElevenLabs (eleven_flash_v2_5). A ELEVENLABS_API_KEY nunca sai
+ * do servidor — o frontend só recebe os bytes de áudio já prontos. A rota
+ * (e o contrato com o frontend) continua a mesma de antes; só o provedor
+ * por trás mudou.
+ */
+
+const ELEVENLABS_BASE = 'https://api.elevenlabs.io/v1/text-to-speech';
+const MODELO_TTS = 'eleven_flash_v2_5';
+/** MP3 compacto, amplamente suportado pelo navegador — leve o bastante pra fila incremental. */
+const FORMATO_AUDIO = 'mp3_22050_32';
+/** Sem isso, uma chamada travada na ElevenLabs nunca solta a requisição do usuário. */
+const TIMEOUT_MS = 20_000;
 
 function limparParaVoz(texto: string): string {
   return texto
@@ -16,27 +30,11 @@ function limparParaVoz(texto: string): string {
     .slice(0, 6000);
 }
 
-function pcmParaWav(pcm: Buffer, sampleRate = 24000, channels = 1): Buffer {
-  const bits = 16;
-  const blockAlign = channels * bits / 8;
-  const byteRate = sampleRate * blockAlign;
-  const wav = Buffer.alloc(44 + pcm.length);
-  wav.write('RIFF', 0, 'ascii');
-  wav.writeUInt32LE(36 + pcm.length, 4);
-  wav.write('WAVE', 8, 'ascii');
-  wav.write('fmt ', 12, 'ascii');
-  wav.writeUInt32LE(16, 16);
-  wav.writeUInt16LE(1, 20);
-  wav.writeUInt16LE(channels, 22);
-  wav.writeUInt32LE(sampleRate, 24);
-  wav.writeUInt32LE(byteRate, 28);
-  wav.writeUInt16LE(blockAlign, 32);
-  wav.writeUInt16LE(bits, 34);
-  wav.write('data', 36, 'ascii');
-  wav.writeUInt32LE(pcm.length, 40);
-  pcm.copy(wav, 44);
-  return wav;
-}
+const MENSAGENS_POR_STATUS: Record<number, string> = {
+  401: 'Credencial de voz inválida.',
+  403: 'Sem permissão para usar esta voz.',
+  422: 'Não foi possível processar este texto para voz.',
+};
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
@@ -52,42 +50,55 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
   console.log('[NEXO LATENCIA] auth /falar', Date.now() - tInicio, 'ms');
 
-  const key = (process.env.GEMINI_API_KEY ?? '').trim();
-  if (!key) return res.status(503).json({ ok: false, erro: 'TTS não configurado.' });
+  const key = (process.env.ELEVENLABS_API_KEY ?? '').trim();
+  const voiceId = (process.env.ELEVENLABS_VOICE_ID ?? '').trim();
+  if (!key || !voiceId) {
+    console.error('[NEXO TTS] ElevenLabs não configurado:', !key ? 'falta ELEVENLABS_API_KEY' : 'falta ELEVENLABS_VOICE_ID');
+    return res.status(503).json({ ok: false, erro: 'TTS não configurado.' });
+  }
 
   const corpo = (req.body ?? {}) as { texto?: unknown };
   const texto = limparParaVoz(String(corpo.texto ?? ''));
   if (!texto) return res.status(400).json({ ok: false, erro: 'Texto vazio.' });
 
+  const controlador = new AbortController();
+  const timeoutId = setTimeout(() => controlador.abort(), TIMEOUT_MS);
+
   try {
     const tTts = Date.now();
-    const resposta = await fetch(
-      `${GEMINI_BASE}/${MODELO_TTS}:generateContent?key=${encodeURIComponent(key)}`,
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts: [{ text: texto }] }],
-          generationConfig: {
-            responseModalities: ['AUDIO'],
-            speechConfig: {
-              voiceConfig: { prebuiltVoiceConfig: { voiceName: VOZ_TTS } },
-            },
+    let resposta: Response;
+    try {
+      resposta = await fetch(
+        `${ELEVENLABS_BASE}/${encodeURIComponent(voiceId)}/stream?output_format=${FORMATO_AUDIO}`,
+        {
+          method: 'POST',
+          headers: {
+            'xi-api-key': key,
+            'Content-Type': 'application/json',
           },
-        }),
-      },
-    );
+          body: JSON.stringify({
+            text: texto,
+            model_id: MODELO_TTS,
+            language_code: 'pt',
+          }),
+          signal: controlador.signal,
+        },
+      );
+    } catch (e) {
+      const timeout = e instanceof Error && e.name === 'AbortError';
+      console.error('[NEXO TTS] ElevenLabs erro:', timeout ? 'tempo limite excedido' : 'falha de rede');
+      return res.status(timeout ? 504 : 502).json({ ok: false, erro: 'Não foi possível gerar a voz.' });
+    }
 
-    const dados = (await resposta.json().catch(() => null)) as Record<string, unknown> | null;
-    console.log('[NEXO LATENCIA] TTS', Date.now() - tTts, 'ms');
-    if (!resposta.ok || !dados) {
-      console.error('[nexo-ai/tts]', resposta.status, dados);
+    console.log('[NEXO TTS] ElevenLabs respondeu', Date.now() - tTts, 'ms');
+
+    if (!resposta.ok) {
+      const dados = await resposta.json().catch(() => null) as Record<string, unknown> | null;
+      console.error('[nexo-ai/tts] ElevenLabs', resposta.status);
 
       if (resposta.status === 429) {
-        // Propaga status real + tempo de espera pro cliente poder respeitar
-        // um cooldown de verdade, em vez de tentar de novo na hora e piorar
-        // a rajada que já estourou a quota.
         const retryMs = extrairRetryDelayMs(dados, resposta.headers.get('retry-after')) ?? RETRY_MS_PADRAO;
+        console.log('[NEXO TTS] ElevenLabs 429 cooldown', retryMs, 'ms');
         res.setHeader('Retry-After', String(Math.ceil(retryMs / 1000)));
         return res.status(429).json({
           ok: false,
@@ -97,30 +108,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
       }
 
-      return res.status(502).json({ ok: false, erro: 'Não foi possível gerar a voz.' });
+      const erroPublico = MENSAGENS_POR_STATUS[resposta.status] ?? 'Não foi possível gerar a voz.';
+      const status = resposta.status >= 500 ? 502 : resposta.status;
+      return res.status(status).json({ ok: false, erro: erroPublico });
     }
 
-    const candidatos = Array.isArray(dados.candidates) ? dados.candidates : [];
-    const content = (candidatos[0] as Record<string, unknown> | undefined)?.content as Record<string, unknown> | undefined;
-    const parts = Array.isArray(content?.parts) ? content.parts : [];
-    const audio = parts
-      .map((p) => (p as Record<string, unknown>).inlineData as { data?: string; mimeType?: string } | undefined)
-      .find((p) => typeof p?.data === 'string');
-
-    if (!audio?.data) {
-      console.error('[nexo-ai/tts] resposta sem áudio', dados);
+    const bytes = Buffer.from(await resposta.arrayBuffer());
+    if (!bytes.length) {
+      console.error('[nexo-ai/tts] ElevenLabs respondeu sem áudio');
       return res.status(502).json({ ok: false, erro: 'O TTS não retornou áudio.' });
     }
 
-    const pcm = Buffer.from(audio.data, 'base64');
-    const wav = pcmParaWav(pcm);
-    res.setHeader('Content-Type', 'audio/wav');
+    res.setHeader('Content-Type', 'audio/mpeg');
     res.setHeader('Cache-Control', 'no-store');
-    res.setHeader('Content-Length', String(wav.length));
+    res.setHeader('Content-Length', String(bytes.length));
     console.log('[NEXO LATENCIA] total /falar', Date.now() - tInicio, 'ms');
-    return res.status(200).send(wav);
+    return res.status(200).send(bytes);
   } catch (e) {
-    console.error('[nexo-ai/tts] falha', e);
+    console.error('[nexo-ai/tts] falha', e instanceof Error ? e.message : 'erro desconhecido');
     return res.status(502).json({ ok: false, erro: 'Falha ao gerar a voz.' });
+  } finally {
+    clearTimeout(timeoutId);
   }
 }

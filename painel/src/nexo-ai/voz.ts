@@ -1,4 +1,4 @@
-/* Voz e escuta da NEXO AI: MediaRecorder + transcrição Groq para entrada, Gemini TTS para saída. */
+/* Voz e escuta da NEXO AI: MediaRecorder + transcrição Groq (Whisper) para entrada, ElevenLabs TTS para saída. */
 import { getSupabase } from '@/data/supabase/client';
 
 export interface AoFalar { aoIniciar?: () => void; aoTerminar?: () => void; aoErro?: (motivo: string) => void; aoNivel?: (nivel: number) => void; }
@@ -72,15 +72,6 @@ function limparParaVoz(texto: string): string {
     .slice(0, 6000);
 }
 
-function pcm16ParaBuffer(ctx: AudioContext, bytes: ArrayBuffer): AudioBuffer {
-  const view = new DataView(bytes);
-  const samples = Math.floor(view.byteLength / 2);
-  const buffer = ctx.createBuffer(1, samples, 24000);
-  const canal = buffer.getChannelData(0);
-  for (let i = 0; i < samples; i++) canal[i] = view.getInt16(i * 2, true) / 32768;
-  return buffer;
-}
-
 /** Motivo do DOMException do getUserMedia → mensagem em português. */
 const ERROS_MICROFONE: Record<string, string> = {
   NotAllowedError: 'Permissão de microfone negada. Libere o microfone no navegador e tente novamente.',
@@ -91,8 +82,8 @@ const ERROS_MICROFONE: Record<string, string> = {
   OverconstrainedError: 'Não foi possível configurar o microfone deste dispositivo.',
 };
 
-class VozGemini implements ProvedorVoz {
-  readonly nome = 'gemini-kore';
+class VozNexoAI implements ProvedorVoz {
+  readonly nome = 'groq-elevenlabs';
   private contextoAudio: AudioContext | null = null;
   private fonteAtual: AudioBufferSourceNode | null = null;
   private falando = false;
@@ -110,8 +101,8 @@ class VozGemini implements ProvedorVoz {
   private proximoIndiceFala = 0;
   /**
    * Timestamp (epoch ms) até quando NÃO tentar sintetizar nada — setado após
-   * um 429 da Gemini. É por instância (this), não por geração: a quota é do
-   * projeto inteiro, não reseta só porque o usuário mandou uma pergunta nova.
+   * um 429 da ElevenLabs. É por instância (this), não por geração: a quota é
+   * do projeto inteiro, não reseta só porque o usuário mandou uma pergunta nova.
    */
   private cooldownTtsAte = 0;
   private streamAtual: MediaStream | null = null;
@@ -170,7 +161,9 @@ class VozGemini implements ProvedorVoz {
         const ctx = this.garantirContextoAudio();
         if (!ctx) throw new Error('Áudio não disponível neste navegador.');
         await ctx.resume();
-        const buffer = pcm16ParaBuffer(ctx, bytes);
+        // MP3 da ElevenLabs — não é mais PCM16 bruto do Gemini, então precisa
+        // do decodificador de verdade do navegador, não de leitura manual de bytes.
+        const buffer = await ctx.decodeAudioData(bytes);
         if (!this.falando) return;
 
         const fonte = ctx.createBufferSource();
@@ -284,7 +277,7 @@ class VozGemini implements ProvedorVoz {
       return null;
     }
     try {
-      console.log('[NEXO TTS] sintetizando bloco', indice);
+      console.log('[NEXO TTS] ElevenLabs sintetizando bloco', indice);
       const token = await this.tokenSessao();
       if (!token) throw new Error('Sua sessão expirou. Entre novamente para falar com a NEXO AI.');
 
@@ -300,7 +293,7 @@ class VozGemini implements ProvedorVoz {
           ? Math.min(corpo.retryMs, 60_000)
           : 20_000;
         this.cooldownTtsAte = Date.now() + retryMs;
-        console.log('[NEXO TTS] 429 cooldown', retryMs, 'ms');
+        console.log('[NEXO TTS] ElevenLabs 429 cooldown', retryMs, 'ms');
         throw new Error(corpo?.erro ?? 'A voz da NEXO está temporariamente indisponível (limite de uso atingido).');
       }
 
@@ -313,7 +306,11 @@ class VozGemini implements ProvedorVoz {
       if (geracao !== this.geracaoFala) return null; // cancelado enquanto buscava
       const ctx = this.garantirContextoAudio();
       if (!ctx) throw new Error('Áudio não disponível neste navegador.');
-      return pcm16ParaBuffer(ctx, bytes);
+      try {
+        return await ctx.decodeAudioData(bytes);
+      } catch {
+        throw new Error('Não foi possível processar o áudio da voz.');
+      }
     } catch (e) {
       if (geracao === this.geracaoFala) {
         console.log('[NEXO MIC] fila de fala: erro num segmento —', e instanceof Error ? e.message : e);
@@ -606,4 +603,4 @@ class VozGemini implements ProvedorVoz {
   }
 }
 
-export function criarProvedorVoz(): ProvedorVoz { return new VozGemini(); }
+export function criarProvedorVoz(): ProvedorVoz { return new VozNexoAI(); }

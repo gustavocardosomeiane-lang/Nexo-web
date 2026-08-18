@@ -252,7 +252,8 @@ test('de qualquer estado ativo dá para cair em erro', () => {
 });
 
 /* ==========================================================================
-   Cooldown de TTS — extração segura do tempo de espera num 429 da Gemini
+   Cooldown de TTS — extração segura do tempo de espera num 429
+   (genérico: já serviu pro Gemini, serve igual pra ElevenLabs ou qualquer outro)
    ========================================================================== */
 
 test('extrairRetryDelayMs: prioriza o header Retry-After quando presente', () => {
@@ -288,4 +289,32 @@ test('extrairRetryDelayMs: devolve null quando não há nenhuma fonte utilizáve
 
 test('RETRY_MS_PADRAO existe como fallback documentado quando extrairRetryDelayMs devolve null', () => {
   assert.equal(RETRY_MS_PADRAO, 20_000);
+});
+
+test('extrairRetryDelayMs: reconhece o formato de erro da ElevenLabs ({ detail: { message } })', () => {
+  const ms = extrairRetryDelayMs({ detail: { status: 'too_many_concurrent_requests', message: 'Please retry after 8s.' } });
+  assert.equal(ms, 8_000);
+});
+
+test('extrairRetryDelayMs: reconhece detail como string direta', () => {
+  const ms = extrairRetryDelayMs({ detail: 'rate limited, retry in 5s' });
+  assert.equal(ms, 5_000);
+});
+
+test('extrairRetryDelayMs: reconhece campos numéricos genéricos (retry_after/retryAfter/retry_in/retryIn)', () => {
+  assert.equal(extrairRetryDelayMs({ retry_after: 7 }), 7_000);
+  assert.equal(extrairRetryDelayMs({ retryAfter: 9 }), 9_000);
+  assert.equal(extrairRetryDelayMs({ retry_in: 3 }), 3_000);
+  assert.equal(extrairRetryDelayMs({ retryIn: 4 }), 4_000);
+});
+
+test('extrairRetryDelayMs: campo genérico negativo/zero é ignorado, cai pro próximo formato reconhecido', () => {
+  assert.equal(extrairRetryDelayMs({ retry_after: -1, message: 'retry in 6s' }), 6_000);
+});
+
+test('extrairRetryDelayMs: corpo em formato inesperado (string, número, array solto) não quebra — devolve null', () => {
+  assert.equal(extrairRetryDelayMs('erro em texto puro'), null);
+  assert.equal(extrairRetryDelayMs(42), null);
+  assert.equal(extrairRetryDelayMs(undefined), null);
+  assert.equal(extrairRetryDelayMs([1, 2, 3]), null);
 });

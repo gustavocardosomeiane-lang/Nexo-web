@@ -355,25 +355,18 @@ export function finalizarSegmentacao(restante: string): string | null {
 }
 
 /* ==========================================================================
-   7. COOLDOWN DE TTS — extração segura do tempo de espera num 429 da Gemini
+   7. COOLDOWN DE TTS — extração segura do tempo de espera num 429
+
+   Genérico por design: não assume o formato de erro de um provedor
+   específico. Já serviu para o Gemini TTS; serve igual para a ElevenLabs (ou
+   qualquer outro) sem precisar reescrever nada — só reconhece mais um
+   formato de corpo, além do header HTTP padrão.
    ========================================================================== */
 
-/** Nunca esperar mais que isso, mesmo que a Gemini sugira um valor maior. */
+/** Nunca esperar mais que isso, mesmo que o provedor sugira um valor maior. */
 const RETRY_MS_MAXIMO = 60_000;
 /** Usado quando o 429 não informa tempo nenhum (nem header, nem corpo). */
 export const RETRY_MS_PADRAO = 20_000;
-
-interface DetalheErroGemini {
-  ['@type']?: string;
-  retryDelay?: string;
-}
-
-interface CorpoErroGemini {
-  error?: {
-    message?: string;
-    details?: DetalheErroGemini[];
-  };
-}
 
 /**
  * Extrai, com segurança, quanto tempo esperar antes de tentar sintetizar
@@ -381,16 +374,22 @@ interface CorpoErroGemini {
  * simples e limitado, e todo valor é validado (finito, positivo) e limitado
  * a RETRY_MS_MAXIMO antes de ser usado. Ordem de preferência:
  *
- *   1. Header HTTP `Retry-After` (segundos) — o mais confiável quando existe.
- *   2. Campo estruturado do erro do Google: `error.details[].retryDelay`
- *      (ex.: "20s") — é assim que a API da Gemini normalmente informa.
- *   3. Texto livre "retry in Xs" dentro de `error.message`, como último
- *      recurso — só um padrão numérico simples, nunca conteúdo arbitrário.
+ *   1. Header HTTP `Retry-After` (segundos) — o mais confiável quando existe,
+ *      e não depende do formato de erro de nenhum provedor específico.
+ *   2. Campos numéricos diretos comuns em corpos de erro JSON
+ *      (`retry_after`, `retryAfter`, `retry_in`, `retryIn`, em segundos).
+ *   3. Formato estruturado do Google (Gemini): `error.details[].retryDelay`
+ *      (ex.: "20s").
+ *   4. Texto livre "retry in/after Xs" em qualquer campo de mensagem
+ *      reconhecido (`error.message`, `detail`/`detail.message`, `message`) —
+ *      último recurso, só um padrão numérico simples, nunca conteúdo
+ *      arbitrário interpretado.
  *
- * `null` quando nenhuma das três fontes tem um valor utilizável — quem chama
- * decide o fallback (RETRY_MS_PADRAO).
+ * `corpo` é tratado como formato desconhecido (`unknown`) de propósito — a
+ * função não presume QUAL provedor respondeu. `null` quando nenhuma fonte
+ * tem um valor utilizável — quem chama decide o fallback (RETRY_MS_PADRAO).
  */
-export function extrairRetryDelayMs(corpo: CorpoErroGemini | null, headerRetryAfter?: string | null): number | null {
+export function extrairRetryDelayMs(corpo: unknown, headerRetryAfter?: string | null): number | null {
   const limitar = (segundos: number): number | null =>
     Number.isFinite(segundos) && segundos > 0 ? Math.min(segundos * 1000, RETRY_MS_MAXIMO) : null;
 
@@ -399,10 +398,22 @@ export function extrairRetryDelayMs(corpo: CorpoErroGemini | null, headerRetryAf
     if (doHeader !== null) return doHeader;
   }
 
-  const details = corpo?.error?.details;
+  if (!corpo || typeof corpo !== 'object') return null;
+  const raiz = corpo as Record<string, unknown>;
+
+  for (const chave of ['retry_after', 'retryAfter', 'retry_in', 'retryIn']) {
+    const valor = raiz[chave];
+    if (typeof valor === 'number') {
+      const doCampo = limitar(valor);
+      if (doCampo !== null) return doCampo;
+    }
+  }
+
+  const erro = raiz.error as { message?: unknown; details?: unknown } | undefined;
+  const details = erro?.details;
   if (Array.isArray(details)) {
     for (const d of details) {
-      const bruto = d?.retryDelay;
+      const bruto = (d as Record<string, unknown> | null)?.retryDelay;
       if (typeof bruto !== 'string') continue;
       const m = /^(\d+(?:\.\d+)?)s$/.exec(bruto.trim());
       if (!m) continue;
@@ -411,9 +422,16 @@ export function extrairRetryDelayMs(corpo: CorpoErroGemini | null, headerRetryAf
     }
   }
 
-  const mensagem = corpo?.error?.message;
-  if (typeof mensagem === 'string') {
-    const m = /retry in\s+(\d+(?:\.\d+)?)\s*s/i.exec(mensagem);
+  const detail = raiz.detail as { message?: unknown } | string | undefined;
+  const candidatosMensagem = [
+    typeof erro?.message === 'string' ? erro.message : undefined,
+    typeof detail === 'string' ? detail : undefined,
+    typeof detail === 'object' && detail && typeof detail.message === 'string' ? detail.message : undefined,
+    typeof raiz.message === 'string' ? (raiz.message as string) : undefined,
+  ];
+  for (const mensagem of candidatosMensagem) {
+    if (!mensagem) continue;
+    const m = /retry (?:in|after)\s+(\d+(?:\.\d+)?)\s*s/i.exec(mensagem);
     if (m) {
       const doTexto = limitar(Number(m[1]));
       if (doTexto !== null) return doTexto;
