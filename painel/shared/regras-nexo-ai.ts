@@ -276,17 +276,19 @@ export function podeTransitar(de: EstadoNexoAI, para: EstadoNexoAI): boolean {
 const PONTUACAO_FINAL = /[.!?;]/;
 
 /**
- * Piso pra não mandar fragmento minúsculo pro TTS (tipo "Ok." sozinho —
- * gastaria uma chamada de voz inteira por interjeição). NÃO é o alvo de
- * 40–60 caracteres sugerido como ideal: uma frase completa mais curta que
- * isso (ex.: "Temos 42 leads qualificados." = 29 caracteres) ainda é um
- * pensamento inteiro e é falada assim que fecha — esperar só pra "engordar"
- * o segmento atrasaria o primeiro áudio sem ganho nenhum.
+ * Alvo de tamanho do bloco — não é mais "corta na primeira pontuação".
+ *
+ * Cada bloco falável vira UMA requisição a /api/nexo-ai/falar. Cortar cedo
+ * demais (ex.: em toda frase curta) gera rajadas de requisições quase
+ * simultâneas — foi exatamente isso que estourou a quota do Gemini TTS em
+ * produção (vários 429 RESOURCE_EXHAUSTED seguidos). Por isso agora só corta
+ * quando o bloco já atingiu ALVO_MINIMO; frases curtas ("Ok.", "Certo.") se
+ * juntam com a próxima até lá. ALVO_MAXIMO é o teto pra não empilhar um
+ * parágrafo inteiro — mesmo sem ter alcançado o alvo mínimo, corta na última
+ * pontuação vista assim que o buffer passa desse tamanho.
  */
-const TAMANHO_MINIMO_SEGMENTO = 20;
-
-/** Corte de segurança: sem pontuação nenhuma até aqui, corta mesmo assim. */
-const TAMANHO_MAXIMO_BUFFER = 220;
+const ALVO_MINIMO = 80;
+const ALVO_MAXIMO = 160;
 
 export interface ResultadoSegmentacao {
   /** Trechos prontos pra virar áudio, na ordem em que devem ser falados. */
@@ -318,18 +320,27 @@ export function segmentarParaFala(bufferAtual: string, chunkNovo: string): Resul
 }
 
 function encontrarCorte(texto: string): number {
+  // Passo 1: procura pontuação que já feche um bloco grande o bastante
+  // (ALVO_MINIMO). Se a pontuação vier antes disso (frase curta), guarda a
+  // posição mas continua — a frase seguinte pode se juntar a ela.
+  let ultimaPontuacaoPequena = -1;
   for (let i = 0; i < texto.length; i++) {
-    if (PONTUACAO_FINAL.test(texto[i]!) && i + 1 >= TAMANHO_MINIMO_SEGMENTO) {
-      return i + 1;
+    if (PONTUACAO_FINAL.test(texto[i]!)) {
+      const tamanho = i + 1;
+      if (tamanho >= ALVO_MINIMO) return tamanho;
+      ultimaPontuacaoPequena = tamanho;
     }
   }
-  if (texto.length > TAMANHO_MAXIMO_BUFFER) {
-    const espaco = texto.lastIndexOf(' ', TAMANHO_MAXIMO_BUFFER);
-    // Só corta no espaço se sobrar um segmento que valha a pena; senão corta
-    // no limite mesmo (caso raríssimo: uma "palavra" de 220+ caracteres).
-    return espaco > TAMANHO_MINIMO_SEGMENTO ? espaco + 1 : TAMANHO_MAXIMO_BUFFER;
-  }
-  return -1;
+
+  // Passo 2: ainda não atingiu o alvo mínimo em nenhuma pontuação — só corta
+  // se o buffer já passou do teto (ALVO_MAXIMO), pra não crescer sem limite.
+  if (texto.length < ALVO_MAXIMO) return -1;
+  if (ultimaPontuacaoPequena !== -1) return ultimaPontuacaoPequena;
+
+  // Run-on sem pontuação nenhuma até o teto: corta no último espaço antes
+  // dele — nunca no meio de uma palavra.
+  const espaco = texto.lastIndexOf(' ', ALVO_MAXIMO);
+  return espaco > 10 ? espaco + 1 : ALVO_MAXIMO;
 }
 
 /**
@@ -341,4 +352,73 @@ function encontrarCorte(texto: string): number {
 export function finalizarSegmentacao(restante: string): string | null {
   const texto = restante.trim();
   return texto ? texto : null;
+}
+
+/* ==========================================================================
+   7. COOLDOWN DE TTS — extração segura do tempo de espera num 429 da Gemini
+   ========================================================================== */
+
+/** Nunca esperar mais que isso, mesmo que a Gemini sugira um valor maior. */
+const RETRY_MS_MAXIMO = 60_000;
+/** Usado quando o 429 não informa tempo nenhum (nem header, nem corpo). */
+export const RETRY_MS_PADRAO = 20_000;
+
+interface DetalheErroGemini {
+  ['@type']?: string;
+  retryDelay?: string;
+}
+
+interface CorpoErroGemini {
+  error?: {
+    message?: string;
+    details?: DetalheErroGemini[];
+  };
+}
+
+/**
+ * Extrai, com segurança, quanto tempo esperar antes de tentar sintetizar
+ * fala de novo depois de um 429. Nunca faz `eval`/parsing solto — só regex
+ * simples e limitado, e todo valor é validado (finito, positivo) e limitado
+ * a RETRY_MS_MAXIMO antes de ser usado. Ordem de preferência:
+ *
+ *   1. Header HTTP `Retry-After` (segundos) — o mais confiável quando existe.
+ *   2. Campo estruturado do erro do Google: `error.details[].retryDelay`
+ *      (ex.: "20s") — é assim que a API da Gemini normalmente informa.
+ *   3. Texto livre "retry in Xs" dentro de `error.message`, como último
+ *      recurso — só um padrão numérico simples, nunca conteúdo arbitrário.
+ *
+ * `null` quando nenhuma das três fontes tem um valor utilizável — quem chama
+ * decide o fallback (RETRY_MS_PADRAO).
+ */
+export function extrairRetryDelayMs(corpo: CorpoErroGemini | null, headerRetryAfter?: string | null): number | null {
+  const limitar = (segundos: number): number | null =>
+    Number.isFinite(segundos) && segundos > 0 ? Math.min(segundos * 1000, RETRY_MS_MAXIMO) : null;
+
+  if (headerRetryAfter) {
+    const doHeader = limitar(Number(headerRetryAfter));
+    if (doHeader !== null) return doHeader;
+  }
+
+  const details = corpo?.error?.details;
+  if (Array.isArray(details)) {
+    for (const d of details) {
+      const bruto = d?.retryDelay;
+      if (typeof bruto !== 'string') continue;
+      const m = /^(\d+(?:\.\d+)?)s$/.exec(bruto.trim());
+      if (!m) continue;
+      const doDetalhe = limitar(Number(m[1]));
+      if (doDetalhe !== null) return doDetalhe;
+    }
+  }
+
+  const mensagem = corpo?.error?.message;
+  if (typeof mensagem === 'string') {
+    const m = /retry in\s+(\d+(?:\.\d+)?)\s*s/i.exec(mensagem);
+    if (m) {
+      const doTexto = limitar(Number(m[1]));
+      if (doTexto !== null) return doTexto;
+    }
+  }
+
+  return null;
 }

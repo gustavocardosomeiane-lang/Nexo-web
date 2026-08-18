@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { autenticar, responderNaoAutenticado } from '../_lib/auth.js';
+import { extrairRetryDelayMs, RETRY_MS_PADRAO } from '../../shared/regras-nexo-ai.js';
 
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 const MODELO_TTS = (process.env.NEXO_AI_TTS_MODELO ?? 'gemini-3.1-flash-tts-preview').trim();
@@ -81,6 +82,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log('[NEXO LATENCIA] TTS', Date.now() - tTts, 'ms');
     if (!resposta.ok || !dados) {
       console.error('[nexo-ai/tts]', resposta.status, dados);
+
+      if (resposta.status === 429) {
+        // Propaga status real + tempo de espera pro cliente poder respeitar
+        // um cooldown de verdade, em vez de tentar de novo na hora e piorar
+        // a rajada que já estourou a quota.
+        const retryMs = extrairRetryDelayMs(dados, resposta.headers.get('retry-after')) ?? RETRY_MS_PADRAO;
+        res.setHeader('Retry-After', String(Math.ceil(retryMs / 1000)));
+        return res.status(429).json({
+          ok: false,
+          erro: 'A voz da NEXO está temporariamente indisponível (limite de uso atingido).',
+          codigo: 'tts_quota',
+          retryMs,
+        });
+      }
+
       return res.status(502).json({ ok: false, erro: 'Não foi possível gerar a voz.' });
     }
 

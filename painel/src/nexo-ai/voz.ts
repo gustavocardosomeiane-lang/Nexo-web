@@ -32,6 +32,13 @@ export interface ProvedorVoz {
   finalizarEscuta(): void;
 }
 
+/** Um bloco na fila de fala. `bufferPromise` só existe depois que a síntese realmente começou (ver processarFilaFala). */
+interface ItemFilaFala {
+  texto: string;
+  indice: number;
+  bufferPromise: Promise<AudioBuffer | null> | null;
+}
+
 function podeGravarAudio(): boolean {
   return (
     typeof navigator !== 'undefined' &&
@@ -91,7 +98,7 @@ class VozGemini implements ProvedorVoz {
   private falando = false;
   /* ---- Fila de fala incremental (TTS por segmento, streaming) ---- */
   private cbFilaFala: AoFilaFala = {};
-  private filaFala: { texto: string; bufferPromise: Promise<AudioBuffer | null> }[] = [];
+  private filaFala: ItemFilaFala[] = [];
   private fonteFilaAtual: AudioBufferSourceNode | null = null;
   /** Incrementada a cada iniciarFilaFala()/pararFilaFala() — invalida callbacks presos de uma geração anterior. */
   private geracaoFala = 0;
@@ -99,6 +106,14 @@ class VozGemini implements ProvedorVoz {
   private geracaoComWorkerAtivo: number | null = null;
   private filaEncerrada = false;
   private primeiraFalaDaGeracao = false;
+  /** Contador só pra log — identifica cada bloco nos [NEXO TTS] independente da geração. */
+  private proximoIndiceFala = 0;
+  /**
+   * Timestamp (epoch ms) até quando NÃO tentar sintetizar nada — setado após
+   * um 429 da Gemini. É por instância (this), não por geração: a quota é do
+   * projeto inteiro, não reseta só porque o usuário mandou uma pergunta nova.
+   */
+  private cooldownTtsAte = 0;
   private streamAtual: MediaStream | null = null;
   private gravadorAtual: MediaRecorder | null = null;
   /** Cancela a gravação ativa sem transcrever/enviar — usado por pararEscuta(). */
@@ -198,18 +213,30 @@ class VozGemini implements ProvedorVoz {
   }
 
   /* ==========================================================================
-     FILA DE FALA INCREMENTAL
+     FILA DE FALA INCREMENTAL — concorrência controlada
 
-     Cada trecho de texto vira um pedido a /api/nexo-ai/falar assim que entra
-     na fila (prefetch em paralelo — o próximo trecho já pode estar pronto
-     antes do atual terminar de tocar). A REPRODUÇÃO é sempre serial: só um
-     AudioBufferSourceNode ativo por vez, na ordem em que os textos entraram.
+     Pipeline de profundidade NO MÁXIMO 2: enquanto o bloco N está tocando,
+     no máximo o bloco N+1 pode estar sendo sintetizado (fetch a
+     /api/nexo-ai/falar) — nunca N+2, N+3 etc. ao mesmo tempo. Isso é
+     deliberado: enfileirar todos os blocos de uma vez e sintetizar todos em
+     paralelo (o que a versão anterior fazia) gera uma rajada de requisições
+     quase simultâneas à Gemini TTS — foi exatamente isso que estourou a
+     quota em produção (vários 429 RESOURCE_EXHAUSTED seguidos).
+
+     Por isso um item só ganha `bufferPromise` (isto é, só dispara o fetch)
+     quando o worker chega nele — nunca no momento de enfileirarFala(). A
+     REPRODUÇÃO continua sempre serial: só um AudioBufferSourceNode ativo por
+     vez, na ordem em que os textos entraram.
 
      `geracaoFala` é o mecanismo de cancelamento: iniciarFilaFala()/
      pararFilaFala() incrementam esse número, e todo callback assíncrono
      pendente (fetch de síntese, worker de reprodução) se auto-invalida ao
      notar que a geração mudou — o mesmo padrão de identidade já usado em
      iniciarGravacao() para o microfone.
+
+     `cooldownTtsAte` é independente de geração: depois de um 429, nenhuma
+     síntese nova (desta pergunta ou da próxima) roda até o cooldown acabar —
+     a quota é do projeto inteiro, uma pergunta nova não a libera.
      ========================================================================== */
 
   /** Começa uma nova sessão de fala incremental — cancela qualquer fila/áudio anterior primeiro. */
@@ -226,18 +253,21 @@ class VozGemini implements ProvedorVoz {
     this.filaFala = [];
     this.filaEncerrada = false;
     this.geracaoComWorkerAtivo = null;
+    this.proximoIndiceFala = 0;
     if (this.fonteFilaAtual) {
       try { this.fonteFilaAtual.stop(); } catch {}
       this.fonteFilaAtual = null;
     }
   }
 
+  /** Só enfileira o TEXTO — a síntese (fetch) não começa aqui, começa quando o worker chegar nele. */
   enfileirarFala(texto: string): void {
     const limpo = limparParaVoz(texto);
     if (!this.podeFalar || !limpo) return;
-    const geracao = this.geracaoFala;
-    this.filaFala.push({ texto: limpo, bufferPromise: this.sintetizarFala(limpo, geracao) });
-    void this.processarFilaFala(geracao);
+    this.proximoIndiceFala += 1;
+    this.filaFala.push({ texto: limpo, indice: this.proximoIndiceFala, bufferPromise: null });
+    console.log('[NEXO TTS] fila tamanho', this.filaFala.length);
+    void this.processarFilaFala(this.geracaoFala);
   }
 
   encerrarFilaFala(): void {
@@ -248,8 +278,13 @@ class VozGemini implements ProvedorVoz {
     void this.processarFilaFala(this.geracaoFala);
   }
 
-  private async sintetizarFala(texto: string, geracao: number): Promise<AudioBuffer | null> {
+  private async sintetizarFala(texto: string, geracao: number, indice: number): Promise<AudioBuffer | null> {
+    if (Date.now() < this.cooldownTtsAte) {
+      console.log('[NEXO TTS] pulando bloco', indice, '— em cooldown por mais', Math.ceil((this.cooldownTtsAte - Date.now()) / 1000), 's');
+      return null;
+    }
     try {
+      console.log('[NEXO TTS] sintetizando bloco', indice);
       const token = await this.tokenSessao();
       if (!token) throw new Error('Sua sessão expirou. Entre novamente para falar com a NEXO AI.');
 
@@ -258,6 +293,17 @@ class VozGemini implements ProvedorVoz {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ texto }),
       });
+
+      if (resposta.status === 429) {
+        const corpo = (await resposta.json().catch(() => null)) as { erro?: string; retryMs?: unknown } | null;
+        const retryMs = typeof corpo?.retryMs === 'number' && Number.isFinite(corpo.retryMs) && corpo.retryMs > 0
+          ? Math.min(corpo.retryMs, 60_000)
+          : 20_000;
+        this.cooldownTtsAte = Date.now() + retryMs;
+        console.log('[NEXO TTS] 429 cooldown', retryMs, 'ms');
+        throw new Error(corpo?.erro ?? 'A voz da NEXO está temporariamente indisponível (limite de uso atingido).');
+      }
+
       if (!resposta.ok) {
         const corpo = (await resposta.json().catch(() => null)) as { erro?: string } | null;
         throw new Error(corpo?.erro ?? 'Não foi possível gerar a voz.');
@@ -277,16 +323,32 @@ class VozGemini implements ProvedorVoz {
     }
   }
 
-  /** O "player": consome a fila estritamente em ordem, nunca dois áudios ao mesmo tempo. */
+  /**
+   * O "player": consome a fila estritamente em ordem, nunca dois áudios ao
+   * mesmo tempo — e nunca mais de UMA síntese em voo: só dispara o fetch do
+   * PRÓXIMO bloco depois que a síntese do bloco atual já terminou (sucesso
+   * ou falha), nunca antes.
+   */
   private async processarFilaFala(geracao: number): Promise<void> {
     if (this.geracaoComWorkerAtivo === geracao) return; // já tem um worker rodando para esta geração
     this.geracaoComWorkerAtivo = geracao;
 
     while (geracao === this.geracaoFala && this.filaFala.length > 0) {
-      const item = this.filaFala.shift()!;
-      const buffer = await item.bufferPromise;
+      const atual = this.filaFala[0]!;
+      if (!atual.bufferPromise) atual.bufferPromise = this.sintetizarFala(atual.texto, geracao, atual.indice);
+
+      const buffer = await atual.bufferPromise;
       if (geracao !== this.geracaoFala) break;
-      if (buffer) await this.tocarBufferFala(buffer, geracao);
+
+      // SÓ agora — com a síntese do bloco atual já resolvida — prepara o
+      // PRÓXIMO. Nunca dois fetches de síntese em voo ao mesmo tempo.
+      const proximo = this.filaFala[1];
+      if (proximo && !proximo.bufferPromise) {
+        proximo.bufferPromise = this.sintetizarFala(proximo.texto, geracao, proximo.indice);
+      }
+
+      this.filaFala.shift();
+      if (buffer) await this.tocarBufferFala(buffer, geracao, atual.indice);
     }
 
     // Só limpa a própria marca — se uma geração mais nova já assumiu o
@@ -299,7 +361,7 @@ class VozGemini implements ProvedorVoz {
     }
   }
 
-  private async tocarBufferFala(buffer: AudioBuffer, geracao: number): Promise<void> {
+  private async tocarBufferFala(buffer: AudioBuffer, geracao: number, indice: number): Promise<void> {
     if (geracao !== this.geracaoFala) return;
     const ctx = this.garantirContextoAudio();
     if (!ctx) return;
@@ -314,6 +376,7 @@ class VozGemini implements ProvedorVoz {
 
       fonte.onended = () => {
         if (this.fonteFilaAtual === fonte) this.fonteFilaAtual = null;
+        console.log('[NEXO TTS] audio finalizado bloco', indice);
         this.cbFilaFala.aoNivel?.(0);
         resolve();
       };
@@ -331,9 +394,9 @@ class VozGemini implements ProvedorVoz {
       try {
         if (this.primeiraFalaDaGeracao) {
           this.primeiraFalaDaGeracao = false;
-          console.log('[NEXO MIC] fila de fala: primeiro audio comecou');
           this.cbFilaFala.aoIniciar?.();
         }
+        console.log('[NEXO TTS] audio iniciado bloco', indice);
         fonte.start(0);
         atualizarNivel();
       } catch {

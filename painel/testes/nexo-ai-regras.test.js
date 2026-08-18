@@ -12,7 +12,9 @@ import {
   FERRAMENTA_MODULO,
   MAX_MENSAGENS_HISTORICO,
   ORCAMENTO,
+  RETRY_MS_PADRAO,
   estimarTokens,
+  extrairRetryDelayMs,
   ferramentasPermitidas,
   normalizar,
   palavrasChave,
@@ -247,4 +249,43 @@ test('de qualquer estado ativo dá para cair em erro', () => {
   for (const e of ['idle', 'listening', 'thinking', 'responding', 'speaking']) {
     assert.ok(podeTransitar(e, 'error'), e);
   }
+});
+
+/* ==========================================================================
+   Cooldown de TTS — extração segura do tempo de espera num 429 da Gemini
+   ========================================================================== */
+
+test('extrairRetryDelayMs: prioriza o header Retry-After quando presente', () => {
+  const ms = extrairRetryDelayMs({ error: { message: 'x', details: [{ retryDelay: '99s' }] } }, '15');
+  assert.equal(ms, 15_000);
+});
+
+test('extrairRetryDelayMs: usa o campo estruturado error.details[].retryDelay da Gemini', () => {
+  const ms = extrairRetryDelayMs({ error: { message: 'quota exceeded', details: [{ '@type': 'x', retryDelay: '20.5s' }] } });
+  assert.equal(ms, 20_500);
+});
+
+test('extrairRetryDelayMs: cai pro texto livre "retry in Xs" quando não há campo estruturado', () => {
+  const ms = extrairRetryDelayMs({ error: { message: 'You exceeded your quota. Please retry in 12s.' } });
+  assert.equal(ms, 12_000);
+});
+
+test('extrairRetryDelayMs: nunca ultrapassa o teto de 60s, mesmo se a Gemini sugerir mais', () => {
+  const doHeader = extrairRetryDelayMs(null, '3600');
+  assert.equal(doHeader, 60_000);
+  const doDetalhe = extrairRetryDelayMs({ error: { details: [{ retryDelay: '9999s' }] } });
+  assert.equal(doDetalhe, 60_000);
+});
+
+test('extrairRetryDelayMs: devolve null quando não há nenhuma fonte utilizável — quem chama decide o padrão', () => {
+  assert.equal(extrairRetryDelayMs(null), null);
+  assert.equal(extrairRetryDelayMs({ error: { message: 'erro genérico sem tempo nenhum' } }), null);
+  assert.equal(extrairRetryDelayMs({ error: { details: [{ retryDelay: 'não é número' }] } }), null);
+  assert.equal(extrairRetryDelayMs(null, 'não é número'), null);
+  assert.equal(extrairRetryDelayMs(null, '-5'), null, 'valor negativo não é usado');
+  assert.equal(extrairRetryDelayMs(null, '0'), null, 'zero não é um tempo de espera válido');
+});
+
+test('RETRY_MS_PADRAO existe como fallback documentado quando extrairRetryDelayMs devolve null', () => {
+  assert.equal(RETRY_MS_PADRAO, 20_000);
 });
