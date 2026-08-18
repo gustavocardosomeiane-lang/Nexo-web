@@ -23,7 +23,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { autenticar, responderNaoAutenticado, NaoAutenticado } from '../_lib/auth.js';
-import { provedorAtivo, ErroModelo, type MensagemModelo } from '../_lib/nexo-ai/modelo.js';
+import { provedorAtivo, groqStream, ErroModelo, type MensagemModelo, type RespostaModelo } from '../_lib/nexo-ai/modelo.js';
 import {
   definicoesDe,
   executarFerramenta,
@@ -88,6 +88,25 @@ function detectarFerramentas(mensagem: string, permitidas: string[]): string[] {
   return encontradas;
 }
 
+/* --------------------------------------------------------------------------
+   Streaming SSE — contrato consumido por src/nexo-ai/cliente.ts
+
+   Cada frame é uma linha `data: <json>\n\n`. Não usamos a lib EventSource do
+   navegador (só GET, sem Authorization/body); o cliente lê response.body na
+   mão, então o formato aqui só precisa ser consistente com o parser de lá.
+   -------------------------------------------------------------------------- */
+type FrameStream =
+  | { tipo: 'inicio'; conversaId: string }
+  | { tipo: 'chunk'; texto: string }
+  | { tipo: 'fim'; conversaId: string; tokens: { entrada: number; saida: number } }
+  | { tipo: 'erro'; erro: string; codigo?: string };
+
+function enviarFrame(res: VercelResponse, frame: FrameStream): void {
+  res.write(`data: ${JSON.stringify(frame)}\n\n`);
+}
+
+const MENSAGEM_INDISPONIVEL = 'A NEXO está temporariamente indisponível. Tente novamente em alguns instantes.';
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -119,6 +138,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const { db, id: usuarioId } = usuario;
+  let streamIniciado = false;
 
   try {
     /* ---- Sessão ---- */
@@ -179,56 +199,104 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       sistemaComDados = `${sistema}\n\n---\n\n${contextoDados}\nUse somente esses dados reais para responder à pergunta. Não invente números.`;
     }
 
-    /* ---- Exatamente uma chamada ao modelo por mensagem do usuário.
-       Groq (openai/gpt-oss-20b) é o único provedor de texto — ver modelo.ts. ---- */
-    const tModelo = Date.now();
-    const resposta = await modelo.conversar({
-      sistema: sistemaComDados,
-      mensagens,
-      maxTokensSaida: 512,
+    /* ---- Exatamente uma chamada ao modelo por mensagem do usuário, em
+       streaming. Groq (openai/gpt-oss-20b) é o único provedor de texto —
+       ver modelo.ts. Cabeçalhos SSE só são escritos aqui, depois que auth,
+       sessão e contexto já resolveram sem erro — se algo acima falhar, o
+       cliente ainda recebe um JSON de erro normal (ver catch). ---- */
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      // Evita que um proxy intermediário acumule os chunks antes de entregar.
+      'X-Accel-Buffering': 'no',
     });
-    console.log('[NEXO LATENCIA] modelo', Date.now() - tModelo, 'ms');
+    streamIniciado = true;
+    enviarFrame(res, { tipo: 'inicio', conversaId });
 
-    const texto = resposta.texto || 'Não consegui formular uma resposta agora.';
+    const tModelo = Date.now();
+    let tPrimeiroChunk: number | null = null;
+    let textoAcumulado = '';
+    let resultado: RespostaModelo | undefined;
 
-    /* ---- Persiste ---- */
+    const gerador = groqStream({ sistema: sistemaComDados, mensagens, maxTokensSaida: 512 });
+    while (true) {
+      const passo = await gerador.next();
+      if (passo.done) {
+        resultado = passo.value;
+        break;
+      }
+      if (tPrimeiroChunk === null) {
+        tPrimeiroChunk = Date.now();
+        console.log('[NEXO LATENCIA] primeiro_chunk_modelo', tPrimeiroChunk - tModelo, 'ms');
+        console.log('[NEXO LATENCIA] primeiro_chunk_cliente', tPrimeiroChunk - tInicio, 'ms');
+      }
+      textoAcumulado += passo.value;
+      enviarFrame(res, { tipo: 'chunk', texto: passo.value });
+    }
+    console.log('[NEXO LATENCIA] modelo_total', Date.now() - tModelo, 'ms');
+
+    const texto = (resultado?.texto || textoAcumulado).trim() || 'Não consegui formular uma resposta agora.';
+
+    /* ---- Persiste: depois dos chunks visuais (o usuário já viu a resposta
+       inteira), mas ANTES de fechar a resposta — a consistência do turno não
+       fica pendurada num "fire and forget" que a Vercel Node não garante. ---- */
     const tPersiste = Date.now();
     await salvarTurno(db, conversaId, mensagem, texto);
     console.log('[NEXO LATENCIA] persistencia', Date.now() - tPersiste, 'ms');
     console.log('[NEXO LATENCIA] total /conversar', Date.now() - tInicio, 'ms');
 
-    return res.status(200).json({
-      ok: true,
-      conversa_id: conversaId,
-      resposta: texto,
-      tokens: resposta.tokens,
+    enviarFrame(res, {
+      tipo: 'fim',
+      conversaId,
+      tokens: resultado?.tokens ?? { entrada: 0, saida: 0 },
     });
+    res.end();
   } catch (e) {
-    if (e instanceof NaoAutenticado) return responderNaoAutenticado(res, e);
+    if (!streamIniciado) {
+      if (e instanceof NaoAutenticado) return responderNaoAutenticado(res, e);
 
-    const msg = e instanceof Error ? e.message : String(e);
-    console.error('[nexo-ai] erro:', msg);
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('[nexo-ai] erro:', msg);
 
-    if (e instanceof ErroModelo) {
-      // 'quota' saiu daqui: sem fallback, um 429 do Groq é limite transitório
-      // ("tente de novo"), não problema de configuração do servidor.
-      const billingKeywords = ['credit balance', 'billing', 'payment required'];
-      const isBilling = billingKeywords.some((k) => msg.toLowerCase().includes(k));
-      if (isBilling) {
-        return res.status(502).json({
+      if (e instanceof ErroModelo) {
+        // 'quota' saiu daqui: sem fallback, um 429 do Groq é limite transitório
+        // ("tente de novo"), não problema de configuração do servidor.
+        const billingKeywords = ['credit balance', 'billing', 'payment required'];
+        const isBilling = billingKeywords.some((k) => msg.toLowerCase().includes(k));
+        if (isBilling) {
+          return res.status(502).json({
+            ok: false,
+            erro: 'A NEXO AI está temporariamente indisponível por uma questão de configuração do servidor. Avise o administrador.',
+            codigo: 'modelo_billing',
+          });
+        }
+        return res.status(e.status >= 400 && e.status < 600 ? e.status : 500).json({
           ok: false,
-          erro: 'A NEXO AI está temporariamente indisponível por uma questão de configuração do servidor. Avise o administrador.',
-          codigo: 'modelo_billing',
+          erro: MENSAGEM_INDISPONIVEL,
+          codigo: e.codigo ?? 'modelo_erro',
         });
       }
-      return res.status(e.status >= 400 && e.status < 600 ? e.status : 500).json({
-        ok: false,
-        erro: 'A NEXO está temporariamente indisponível. Tente novamente em alguns instantes.',
-        codigo: e.codigo ?? 'modelo_erro',
-      });
+
+      return res.status(500).json({ ok: false, erro: 'Falha ao conversar com a NEXO AI.' });
     }
 
-    return res.status(500).json({ ok: false, erro: 'Falha ao conversar com a NEXO AI.' });
+    // O stream já começou — os cabeçalhos HTTP já foram enviados, então não
+    // dá mais para responder com um JSON de status de erro. O jeito é mandar
+    // um frame `erro` pelo próprio stream e fechar a conexão; o cliente
+    // (conversarStream em cliente.ts) trata isso como falha.
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[nexo-ai] erro (stream em andamento):', msg);
+    try {
+      enviarFrame(res, {
+        tipo: 'erro',
+        erro: MENSAGEM_INDISPONIVEL,
+        codigo: e instanceof ErroModelo ? e.codigo : undefined,
+      });
+    } catch {
+      // Conexão já pode ter caído do lado do cliente — nada a fazer.
+    }
+    res.end();
   }
 }
 

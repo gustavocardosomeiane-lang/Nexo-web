@@ -208,6 +208,41 @@ test('estados impossíveis são recusados', () => {
   assert.ok(!podeTransitar('error', 'thinking'), 'do erro só se volta ao repouso');
 });
 
+test('clicar no microfone enquanto a NEXO fala interrompe e vai direto pra escuta', () => {
+  assert.ok(podeTransitar('speaking', 'listening'));
+});
+
+test('todos os outros estados continuam podendo transitar pros mesmos destinos de sempre', () => {
+  assert.ok(podeTransitar('idle', 'listening'));
+  assert.ok(podeTransitar('idle', 'thinking'));
+  assert.ok(podeTransitar('listening', 'thinking'));
+  assert.ok(podeTransitar('listening', 'idle'));
+  assert.ok(podeTransitar('thinking', 'responding'));
+  assert.ok(podeTransitar('thinking', 'idle'));
+  assert.ok(podeTransitar('responding', 'speaking'));
+  assert.ok(podeTransitar('responding', 'idle'));
+  assert.ok(podeTransitar('speaking', 'idle'));
+  assert.ok(podeTransitar('error', 'idle'));
+});
+
+test('a correção de speaking->listening não abriu nenhuma outra transição por engano', () => {
+  const ESTADOS = ['idle', 'listening', 'thinking', 'responding', 'speaking', 'error'];
+  const PERMITIDAS = {
+    idle: ['listening', 'thinking', 'error'],
+    listening: ['thinking', 'idle', 'error'],
+    thinking: ['responding', 'error', 'idle'],
+    responding: ['speaking', 'idle', 'error'],
+    speaking: ['idle', 'error', 'listening'],
+    error: ['idle'],
+  };
+  for (const de of ESTADOS) {
+    for (const para of ESTADOS) {
+      const esperado = PERMITIDAS[de].includes(para);
+      assert.equal(podeTransitar(de, para), esperado, `${de} -> ${para}`);
+    }
+  }
+});
+
 test('de qualquer estado ativo dá para cair em erro', () => {
   for (const e of ['idle', 'listening', 'thinking', 'responding', 'speaking']) {
     assert.ok(podeTransitar(e, 'error'), e);

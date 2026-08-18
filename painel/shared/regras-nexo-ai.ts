@@ -258,10 +258,87 @@ const TRANSICOES: Record<EstadoNexoAI, EstadoNexoAI[]> = {
   listening: ['thinking', 'idle', 'error'],
   thinking: ['responding', 'error', 'idle'],
   responding: ['speaking', 'idle', 'error'],
-  speaking: ['idle', 'error'],
+  // 'listening' incluído: clicar no microfone enquanto a NEXO fala cancela a
+  // fala (voz.ts) e entra direto em escuta — sem passar por 'idle' no meio.
+  speaking: ['idle', 'error', 'listening'],
   error: ['idle'],
 };
 
 export function podeTransitar(de: EstadoNexoAI, para: EstadoNexoAI): boolean {
   return TRANSICOES[de]?.includes(para) ?? false;
+}
+
+/* ==========================================================================
+   6. SEGMENTAÇÃO DE FALA — streaming de texto para TTS incremental
+   ========================================================================== */
+
+/** Pontuação que fecha uma frase falável. */
+const PONTUACAO_FINAL = /[.!?;]/;
+
+/**
+ * Piso pra não mandar fragmento minúsculo pro TTS (tipo "Ok." sozinho —
+ * gastaria uma chamada de voz inteira por interjeição). NÃO é o alvo de
+ * 40–60 caracteres sugerido como ideal: uma frase completa mais curta que
+ * isso (ex.: "Temos 42 leads qualificados." = 29 caracteres) ainda é um
+ * pensamento inteiro e é falada assim que fecha — esperar só pra "engordar"
+ * o segmento atrasaria o primeiro áudio sem ganho nenhum.
+ */
+const TAMANHO_MINIMO_SEGMENTO = 20;
+
+/** Corte de segurança: sem pontuação nenhuma até aqui, corta mesmo assim. */
+const TAMANHO_MAXIMO_BUFFER = 220;
+
+export interface ResultadoSegmentacao {
+  /** Trechos prontos pra virar áudio, na ordem em que devem ser falados. */
+  segmentos: string[];
+  /** O que sobrou no buffer, ainda sem fechar frase — passa pra próxima chamada. */
+  restante: string;
+}
+
+/**
+ * Acumula o novo chunk no buffer e extrai quantos segmentos faláveis
+ * estiverem prontos. Chamada uma vez por chunk do streaming — o buffer vai e
+ * volta entre chamadas, então funciona mesmo se a pontuação ou uma palavra
+ * vier partida entre dois chunks (a busca sempre roda no texto concatenado,
+ * nunca isolada por chunk).
+ */
+export function segmentarParaFala(bufferAtual: string, chunkNovo: string): ResultadoSegmentacao {
+  let texto = `${bufferAtual}${chunkNovo}`;
+  const segmentos: string[] = [];
+
+  for (;;) {
+    const corte = encontrarCorte(texto);
+    if (corte === -1) break;
+    const segmento = texto.slice(0, corte).trim();
+    texto = texto.slice(corte);
+    if (segmento) segmentos.push(segmento);
+  }
+
+  return { segmentos, restante: texto };
+}
+
+function encontrarCorte(texto: string): number {
+  for (let i = 0; i < texto.length; i++) {
+    if (PONTUACAO_FINAL.test(texto[i]!) && i + 1 >= TAMANHO_MINIMO_SEGMENTO) {
+      return i + 1;
+    }
+  }
+  if (texto.length > TAMANHO_MAXIMO_BUFFER) {
+    const espaco = texto.lastIndexOf(' ', TAMANHO_MAXIMO_BUFFER);
+    // Só corta no espaço se sobrar um segmento que valha a pena; senão corta
+    // no limite mesmo (caso raríssimo: uma "palavra" de 220+ caracteres).
+    return espaco > TAMANHO_MINIMO_SEGMENTO ? espaco + 1 : TAMANHO_MAXIMO_BUFFER;
+  }
+  return -1;
+}
+
+/**
+ * Chamada só quando o texto INTEIRO da resposta já terminou (stream do
+ * modelo encerrado): o que sobrou no buffer sem pontuação — incluindo uma
+ * frase final sem ponto — ainda precisa ser falado. `null` se não sobrou
+ * nada de verdade (só espaço em branco).
+ */
+export function finalizarSegmentacao(restante: string): string | null {
+  const texto = restante.trim();
+  return texto ? texto : null;
 }

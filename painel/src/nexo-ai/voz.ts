@@ -1,27 +1,51 @@
-/* Voz e escuta da NEXO AI: Speech Recognition para entrada + Gemini TTS para saída. */
+/* Voz e escuta da NEXO AI: MediaRecorder + transcrição Groq para entrada, Gemini TTS para saída. */
 import { getSupabase } from '@/data/supabase/client';
 
 export interface AoFalar { aoIniciar?: () => void; aoTerminar?: () => void; aoErro?: (motivo: string) => void; aoNivel?: (nivel: number) => void; }
-export interface AoOuvir { aoParcial?: (texto: string) => void; aoFinal?: (texto: string) => void; aoErro?: (motivo: string) => void; aoFim?: () => void; }
-export interface ProvedorVoz { readonly nome: string; readonly podeFalar: boolean; readonly podeOuvir: boolean; falar(texto: string, cb?: AoFalar): void; pararFala(): void; ouvir(cb?: AoOuvir): void; pararEscuta(): void; finalizarEscuta(): void; }
-
-interface ReconhecimentoFala extends EventTarget {
-  lang: string;
-  continuous: boolean;
-  interimResults: boolean;
-  start(): void;
-  stop(): void;
-  abort(): void;
-  onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }> }) => void) | null;
-  onerror: ((e: { error: string }) => void) | null;
-  onend: (() => void) | null;
+export interface AoOuvir { aoParcial?: (texto: string) => void; aoProcessando?: () => void; aoFinal?: (texto: string) => void; aoErro?: (motivo: string) => void; aoFim?: () => void; }
+/** Callbacks de uma sessão de fila de fala — ver iniciarFilaFala(). */
+export interface AoFilaFala {
+  /** O primeiro áudio da fila começou a tocar de verdade. */
+  aoIniciar?: () => void;
+  aoNivel?: (nivel: number) => void;
+  /** A fila foi encerrada (encerrarFilaFala) e esvaziou — nada mais tocando nem pendente. */
+  aoTerminar?: () => void;
+  /** Erro ao gerar/tocar UM segmento — não interrompe os demais da fila. */
+  aoErro?: (motivo: string) => void;
 }
-type ConstrutorReconhecimento = new () => ReconhecimentoFala;
+export interface ProvedorVoz {
+  readonly nome: string;
+  readonly podeFalar: boolean;
+  readonly podeOuvir: boolean;
+  falar(texto: string, cb?: AoFalar): void;
+  pararFala(): void;
+  /** Começa uma nova sessão de fala incremental — cancela qualquer fila/áudio anterior. */
+  iniciarFilaFala(cb?: AoFilaFala): void;
+  /** Adiciona um trecho ao fim da fila; a síntese já começa em paralelo (prefetch). */
+  enfileirarFala(texto: string): void;
+  /** Sinaliza que não vem mais texto — aoTerminar dispara assim que a fila esvaziar. */
+  encerrarFilaFala(): void;
+  /** Cancela a fila ativa (áudio tocando + pendentes) sem chamar aoTerminar. */
+  pararFilaFala(): void;
+  ouvir(cb?: AoOuvir): void;
+  pararEscuta(): void;
+  finalizarEscuta(): void;
+}
 
-function construtorReconhecimento(): ConstrutorReconhecimento | null {
-  if (typeof window === 'undefined') return null;
-  const w = window as unknown as { SpeechRecognition?: ConstrutorReconhecimento; webkitSpeechRecognition?: ConstrutorReconhecimento };
-  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
+function podeGravarAudio(): boolean {
+  return (
+    typeof navigator !== 'undefined' &&
+    !!navigator.mediaDevices?.getUserMedia &&
+    typeof window !== 'undefined' &&
+    'MediaRecorder' in window
+  );
+}
+
+function tipoDeGravacaoSuportado(): string | undefined {
+  if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') return undefined;
+  return ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'].find((tipo) =>
+    MediaRecorder.isTypeSupported(tipo),
+  );
 }
 
 function criarContextoAudio(): AudioContext | null {
@@ -50,23 +74,43 @@ function pcm16ParaBuffer(ctx: AudioContext, bytes: ArrayBuffer): AudioBuffer {
   return buffer;
 }
 
+/** Motivo do DOMException do getUserMedia → mensagem em português. */
+const ERROS_MICROFONE: Record<string, string> = {
+  NotAllowedError: 'Permissão de microfone negada. Libere o microfone no navegador e tente novamente.',
+  PermissionDeniedError: 'Permissão de microfone negada. Libere o microfone no navegador e tente novamente.',
+  NotFoundError: 'Nenhum microfone encontrado neste dispositivo.',
+  DevicesNotFoundError: 'Nenhum microfone encontrado neste dispositivo.',
+  NotReadableError: 'O microfone está sendo usado por outro programa.',
+  OverconstrainedError: 'Não foi possível configurar o microfone deste dispositivo.',
+};
+
 class VozGemini implements ProvedorVoz {
   readonly nome = 'gemini-kore';
-  private reconhecimento: ReconhecimentoFala | null = null;
   private contextoAudio: AudioContext | null = null;
   private fonteAtual: AudioBufferSourceNode | null = null;
   private falando = false;
-  private temporizadorSilencio: ReturnType<typeof setTimeout> | null = null;
-  /** Cancela a sessão de escuta ativa sem disparar aoFinal — usado por pararEscuta(). */
+  /* ---- Fila de fala incremental (TTS por segmento, streaming) ---- */
+  private cbFilaFala: AoFilaFala = {};
+  private filaFala: { texto: string; bufferPromise: Promise<AudioBuffer | null> }[] = [];
+  private fonteFilaAtual: AudioBufferSourceNode | null = null;
+  /** Incrementada a cada iniciarFilaFala()/pararFilaFala() — invalida callbacks presos de uma geração anterior. */
+  private geracaoFala = 0;
+  /** Geração dona do "worker" que consome a fila agora — evita dois workers rodando ao mesmo tempo. */
+  private geracaoComWorkerAtivo: number | null = null;
+  private filaEncerrada = false;
+  private primeiraFalaDaGeracao = false;
+  private streamAtual: MediaStream | null = null;
+  private gravadorAtual: MediaRecorder | null = null;
+  /** Cancela a gravação ativa sem transcrever/enviar — usado por pararEscuta(). */
   private cancelarEscutaAtual: (() => void) | null = null;
-  /** Consolida e envia a sessão de escuta ativa — usado por finalizarEscuta() (2º clique no mic). */
+  /** Encerra a gravação ativa e dispara a transcrição — usado por finalizarEscuta() (2º clique no mic). */
   private finalizarEscutaAtual: (() => void) | null = null;
 
   get podeFalar(): boolean {
     return typeof window !== 'undefined' && ('AudioContext' in window || 'webkitAudioContext' in (window as unknown as Record<string, unknown>));
   }
 
-  get podeOuvir(): boolean { return construtorReconhecimento() !== null; }
+  get podeOuvir(): boolean { return podeGravarAudio(); }
 
   private garantirContextoAudio(): AudioContext | null {
     if (!this.contextoAudio) this.contextoAudio = criarContextoAudio();
@@ -143,165 +187,329 @@ class VozGemini implements ProvedorVoz {
     })();
   }
 
+  /** Para tudo que estiver falando — a fala avulsa (falar()) E a fila incremental. */
   pararFala(): void {
     this.falando = false;
     if (this.fonteAtual) {
       try { this.fonteAtual.stop(); } catch {}
       this.fonteAtual = null;
     }
+    this.pararFilaFala();
+  }
+
+  /* ==========================================================================
+     FILA DE FALA INCREMENTAL
+
+     Cada trecho de texto vira um pedido a /api/nexo-ai/falar assim que entra
+     na fila (prefetch em paralelo — o próximo trecho já pode estar pronto
+     antes do atual terminar de tocar). A REPRODUÇÃO é sempre serial: só um
+     AudioBufferSourceNode ativo por vez, na ordem em que os textos entraram.
+
+     `geracaoFala` é o mecanismo de cancelamento: iniciarFilaFala()/
+     pararFilaFala() incrementam esse número, e todo callback assíncrono
+     pendente (fetch de síntese, worker de reprodução) se auto-invalida ao
+     notar que a geração mudou — o mesmo padrão de identidade já usado em
+     iniciarGravacao() para o microfone.
+     ========================================================================== */
+
+  /** Começa uma nova sessão de fala incremental — cancela qualquer fila/áudio anterior primeiro. */
+  iniciarFilaFala(cb: AoFilaFala = {}): void {
+    this.pararFilaFala();
+    this.cbFilaFala = cb;
+    this.primeiraFalaDaGeracao = true;
+  }
+
+  /** Cancelamento real da fila: descarta o que estiver tocando e o que estiver pendente, sem chamar aoTerminar. */
+  pararFilaFala(): void {
+    console.log('[NEXO MIC] pararFilaFala (cancela fila de TTS)');
+    this.geracaoFala += 1;
+    this.filaFala = [];
+    this.filaEncerrada = false;
+    this.geracaoComWorkerAtivo = null;
+    if (this.fonteFilaAtual) {
+      try { this.fonteFilaAtual.stop(); } catch {}
+      this.fonteFilaAtual = null;
+    }
+  }
+
+  enfileirarFala(texto: string): void {
+    const limpo = limparParaVoz(texto);
+    if (!this.podeFalar || !limpo) return;
+    const geracao = this.geracaoFala;
+    this.filaFala.push({ texto: limpo, bufferPromise: this.sintetizarFala(limpo, geracao) });
+    void this.processarFilaFala(geracao);
+  }
+
+  encerrarFilaFala(): void {
+    this.filaEncerrada = true;
+    // Garante o aoTerminar mesmo se a fila já estava vazia e parada (ex.:
+    // resposta sem nenhum segmento falável — não deveria acontecer, mas não
+    // pode deixar o estado da UI preso em "falando" por falta de callback).
+    void this.processarFilaFala(this.geracaoFala);
+  }
+
+  private async sintetizarFala(texto: string, geracao: number): Promise<AudioBuffer | null> {
+    try {
+      const token = await this.tokenSessao();
+      if (!token) throw new Error('Sua sessão expirou. Entre novamente para falar com a NEXO AI.');
+
+      const resposta = await fetch('/api/nexo-ai/falar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ texto }),
+      });
+      if (!resposta.ok) {
+        const corpo = (await resposta.json().catch(() => null)) as { erro?: string } | null;
+        throw new Error(corpo?.erro ?? 'Não foi possível gerar a voz.');
+      }
+
+      const bytes = await resposta.arrayBuffer();
+      if (geracao !== this.geracaoFala) return null; // cancelado enquanto buscava
+      const ctx = this.garantirContextoAudio();
+      if (!ctx) throw new Error('Áudio não disponível neste navegador.');
+      return pcm16ParaBuffer(ctx, bytes);
+    } catch (e) {
+      if (geracao === this.geracaoFala) {
+        console.log('[NEXO MIC] fila de fala: erro num segmento —', e instanceof Error ? e.message : e);
+        this.cbFilaFala.aoErro?.(e instanceof Error ? e.message : 'Falha ao gerar a voz.');
+      }
+      return null;
+    }
+  }
+
+  /** O "player": consome a fila estritamente em ordem, nunca dois áudios ao mesmo tempo. */
+  private async processarFilaFala(geracao: number): Promise<void> {
+    if (this.geracaoComWorkerAtivo === geracao) return; // já tem um worker rodando para esta geração
+    this.geracaoComWorkerAtivo = geracao;
+
+    while (geracao === this.geracaoFala && this.filaFala.length > 0) {
+      const item = this.filaFala.shift()!;
+      const buffer = await item.bufferPromise;
+      if (geracao !== this.geracaoFala) break;
+      if (buffer) await this.tocarBufferFala(buffer, geracao);
+    }
+
+    // Só limpa a própria marca — se uma geração mais nova já assumiu o
+    // worker, essa comparação falha e não mexe no que não é dela.
+    if (this.geracaoComWorkerAtivo === geracao) this.geracaoComWorkerAtivo = null;
+
+    if (geracao === this.geracaoFala && this.filaEncerrada && this.filaFala.length === 0) {
+      console.log('[NEXO MIC] fila de fala: terminou');
+      this.cbFilaFala.aoTerminar?.();
+    }
+  }
+
+  private async tocarBufferFala(buffer: AudioBuffer, geracao: number): Promise<void> {
+    if (geracao !== this.geracaoFala) return;
+    const ctx = this.garantirContextoAudio();
+    if (!ctx) return;
+    try { await ctx.resume(); } catch {}
+    if (geracao !== this.geracaoFala) return;
+
+    return new Promise((resolve) => {
+      const fonte = ctx.createBufferSource();
+      fonte.buffer = buffer;
+      fonte.connect(ctx.destination);
+      this.fonteFilaAtual = fonte;
+
+      fonte.onended = () => {
+        if (this.fonteFilaAtual === fonte) this.fonteFilaAtual = null;
+        this.cbFilaFala.aoNivel?.(0);
+        resolve();
+      };
+
+      const inicio = performance.now();
+      const atualizarNivel = () => {
+        if (geracao !== this.geracaoFala || this.fonteFilaAtual !== fonte) return;
+        const decorrido = (performance.now() - inicio) / 1000;
+        const duracao = buffer.duration || 1;
+        const pulso = 0.3 + Math.min(0.65, Math.max(0, 1 - decorrido / duracao) * 0.5);
+        this.cbFilaFala.aoNivel?.(pulso);
+        requestAnimationFrame(atualizarNivel);
+      };
+
+      try {
+        if (this.primeiraFalaDaGeracao) {
+          this.primeiraFalaDaGeracao = false;
+          console.log('[NEXO MIC] fila de fala: primeiro audio comecou');
+          this.cbFilaFala.aoIniciar?.();
+        }
+        fonte.start(0);
+        atualizarNivel();
+      } catch {
+        if (this.fonteFilaAtual === fonte) this.fonteFilaAtual = null;
+        resolve();
+      }
+    });
+  }
+
+  /** Envia o Blob gravado para /api/nexo-ai/transcrever e devolve o texto. GROQ_API_KEY nunca sai do servidor. */
+  private async transcrever(blob: Blob): Promise<string> {
+    const token = await this.tokenSessao();
+    if (!token) throw new Error('Sua sessão expirou. Entre novamente para falar com a NEXO AI.');
+
+    const extensao = blob.type.includes('mp4') ? 'mp4' : blob.type.includes('ogg') ? 'ogg' : 'webm';
+    const form = new FormData();
+    form.append('audio', blob, `gravacao.${extensao}`);
+
+    const resposta = await fetch('/api/nexo-ai/transcrever', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
+
+    const corpo = (await resposta.json().catch(() => null)) as { ok?: boolean; texto?: string; erro?: string } | null;
+    if (!resposta.ok || corpo?.ok === false) {
+      throw new Error(corpo?.erro ?? 'Não foi possível transcrever o áudio.');
+    }
+    return typeof corpo?.texto === 'string' ? corpo.texto : '';
   }
 
   ouvir(cb: AoOuvir = {}): void {
-    const Construtor = construtorReconhecimento();
-    if (!Construtor) { cb.aoErro?.('Este navegador não reconhece voz. Use o teclado.'); return; }
+    if (!this.podeOuvir) { cb.aoErro?.('Este navegador não grava áudio. Use o teclado.'); return; }
 
     this.pararEscuta();
     this.pararFala();
-    void this.iniciarEscuta(Construtor, cb);
+    void this.iniciarGravacao(cb);
   }
 
-  private async iniciarEscuta(Construtor: ConstrutorReconhecimento, cb: AoOuvir): Promise<void> {
-    const rec = new Construtor();
-    rec.lang = 'pt-BR';
-    rec.continuous = false;
-    rec.interimResults = true;
+  private async iniciarGravacao(cb: AoOuvir): Promise<void> {
+    const encerrarTracks = (stream: MediaStream | null) => {
+      stream?.getTracks().forEach((track) => track.stop());
+    };
 
-    let acumulado = '';
-    let parcialAtual = '';
-    let indiceProcessado = 0;
-    let houveErro = false;
+    let stream: MediaStream;
+    try {
+      console.log('[NEXO MIC] pedindo microfone (getUserMedia)');
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      const nome = e instanceof DOMException ? e.name : '';
+      console.log('[NEXO MIC] getUserMedia falhou:', nome || e);
+      cb.aoErro?.(ERROS_MICROFONE[nome] ?? 'Não foi possível acessar o microfone.');
+      cb.aoFim?.();
+      return;
+    }
+
+    if (this.streamAtual && this.streamAtual !== stream) encerrarTracks(this.streamAtual);
+    this.streamAtual = stream;
+
+    let gravador: MediaRecorder;
+    try {
+      const mimeType = tipoDeGravacaoSuportado();
+      gravador = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    } catch {
+      encerrarTracks(stream);
+      if (this.streamAtual === stream) this.streamAtual = null;
+      cb.aoErro?.('Gravação de áudio não é suportada neste navegador.');
+      cb.aoFim?.();
+      return;
+    }
+
+    const pedacos: BlobPart[] = [];
     let finalizado = false;
+    let cancelado = false;
 
-    const cancelarTemporizador = () => {
-      if (this.temporizadorSilencio) {
-        clearTimeout(this.temporizadorSilencio);
-        this.temporizadorSilencio = null;
-      }
+    const limpar = () => {
+      encerrarTracks(stream);
+      if (this.streamAtual === stream) this.streamAtual = null;
+      if (this.gravadorAtual === gravador) this.gravadorAtual = null;
+      if (this.cancelarEscutaAtual === cancelar) this.cancelarEscutaAtual = null;
+      if (this.finalizarEscutaAtual === finalizar) this.finalizarEscutaAtual = null;
     };
 
-    const limparReferencias = () => {
-      cancelarTemporizador();
-      if (this.reconhecimento === rec) this.reconhecimento = null;
-      if (this.cancelarEscutaAtual === cancelarSemEnviar) this.cancelarEscutaAtual = null;
-      if (this.finalizarEscutaAtual === concluir) this.finalizarEscutaAtual = null;
-    };
-
-    const concluir = () => {
-      cancelarTemporizador();
+    /** Idempotente: só a primeira chamada (timer/onstop/onerror) tem efeito. */
+    const concluirGravacao = () => {
       if (finalizado) {
-        console.log('[NEXO MIC] concluir: ja finalizado, ignorado');
+        console.log('[NEXO MIC] concluirGravacao: ja finalizado, ignorado');
         return;
       }
       finalizado = true;
-      const texto = `${acumulado} ${parcialAtual}`.trim();
-      console.log('[NEXO MIC] concluir', { texto, acumulado, parcialAtual, houveErro });
-      limparReferencias();
-      try { rec.stop(); } catch {}
-      if (texto && !houveErro) {
-        console.log('[NEXO MIC] aoFinal', texto);
-        cb.aoFinal?.(texto);
+      limpar();
+
+      if (cancelado) {
+        console.log('[NEXO MIC] gravacao cancelada, audio descartado');
+        cb.aoFim?.();
+        return;
       }
-    };
 
-    const cancelarSemEnviar = () => {
-      console.log('[NEXO MIC] cancelarSemEnviar (pararEscuta chamado)');
-      cancelarTemporizador();
-      if (finalizado) return;
-      finalizado = true;
-      limparReferencias();
-      try { rec.stop(); } catch { try { rec.abort(); } catch {} }
-    };
-    this.cancelarEscutaAtual = cancelarSemEnviar;
-    this.finalizarEscutaAtual = concluir;
+      const blob = new Blob(pedacos, { type: gravador.mimeType || 'audio/webm' });
+      console.log('[NEXO MIC] blob pronto:', blob.size, blob.type);
 
-    const programarEnvio = () => {
-      cancelarTemporizador();
-      console.log('[NEXO MIC] timer scheduled');
-      this.temporizadorSilencio = setTimeout(() => {
-        console.log('[NEXO MIC] timer fired');
-        concluir();
-      }, 800);
-    };
+      if (!blob.size) {
+        console.log('[NEXO MIC] blob vazio, nada a transcrever');
+        cb.aoFim?.();
+        return;
+      }
 
-    rec.onresult = (e) => {
-      if (finalizado) return;
-      let parcial = '';
-      for (let i = indiceProcessado; i < e.results.length; i++) {
-        const r = e.results[i]!;
-        const txt = r[0]?.transcript ?? '';
-        if (r.isFinal) {
-          acumulado = `${acumulado} ${txt}`.trim();
-          indiceProcessado = i + 1;
-        } else {
-          parcial += `${txt} `;
+      cb.aoProcessando?.();
+      void (async () => {
+        try {
+          const texto = await this.transcrever(blob);
+          console.log('[NEXO MIC] transcricao ok:', texto);
+          if (texto.trim()) {
+            console.log('[NEXO MIC] aoFinal', texto.trim());
+            cb.aoFinal?.(texto.trim());
+          }
+        } catch (e) {
+          console.log('[NEXO MIC] transcricao falhou:', e);
+          cb.aoErro?.(e instanceof Error ? e.message : 'Falha ao transcrever o áudio.');
+        } finally {
+          cb.aoFim?.();
         }
-      }
-      parcialAtual = parcial.trim();
-      console.log('[NEXO MIC] onresult');
-      console.log('[NEXO MIC] acumulado:', acumulado);
-      console.log('[NEXO MIC] parcialAtual:', parcialAtual);
-      const visivel = `${acumulado} ${parcialAtual}`.trim();
-      if (visivel) {
-        cb.aoParcial?.(visivel);
-        programarEnvio();
-      }
+      })();
     };
 
-    rec.onerror = (e) => {
-      console.log('[NEXO MIC] onerror', e.error);
-      if (e.error === 'no-speech') return;
+    const finalizar = () => {
+      console.log('[NEXO MIC] finalizarEscuta chamado (2º clique)');
       if (finalizado) return;
-      const textoValido = `${acumulado} ${parcialAtual}`.trim();
-      if (textoValido) {
-        concluir();
-        return;
-      }
-      houveErro = true;
-      cancelarTemporizador();
-      const erros: Record<string, string> = {
-        'not-allowed': 'Permissão de microfone negada. Libere o microfone no navegador e tente novamente.',
-        'service-not-allowed': 'O serviço de reconhecimento de voz não está disponível neste navegador.',
-        'audio-capture': 'Não foi possível acessar o microfone.',
-        network: 'Erro de rede no reconhecimento de voz.',
-        aborted: 'O reconhecimento de voz foi interrompido.',
-        'language-not-supported': 'O reconhecimento de português não está disponível neste navegador.',
-      };
-      cb.aoErro?.(erros[e.error] ?? `Falha no reconhecimento de voz (${e.error}).`);
+      try { gravador.stop(); } catch { concluirGravacao(); }
     };
 
-    rec.onend = () => {
-      console.log('[NEXO MIC] onend', { finalizado, acumulado, parcialAtual, houveErro });
-      cancelarTemporizador();
-      if (this.reconhecimento === rec) this.reconhecimento = null;
-      if (!finalizado && (acumulado.trim() || parcialAtual.trim())) {
-        concluir();
-      } else if (!finalizado) {
-        finalizado = true;
-        if (this.cancelarEscutaAtual === cancelarSemEnviar) this.cancelarEscutaAtual = null;
-        if (this.finalizarEscutaAtual === concluir) this.finalizarEscutaAtual = null;
-      }
+    const cancelar = () => {
+      console.log('[NEXO MIC] cancelarEscuta chamado (pararEscuta)');
+      if (finalizado) return;
+      cancelado = true;
+      try { gravador.stop(); } catch { concluirGravacao(); }
+    };
+
+    this.cancelarEscutaAtual = cancelar;
+    this.finalizarEscutaAtual = finalizar;
+
+    gravador.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) pedacos.push(e.data);
+    };
+
+    gravador.onstop = () => {
+      console.log('[NEXO MIC] onstop (MediaRecorder)');
+      concluirGravacao();
+    };
+
+    gravador.onerror = () => {
+      console.log('[NEXO MIC] onerror (MediaRecorder)');
+      if (finalizado) return;
+      finalizado = true;
+      limpar();
+      cb.aoErro?.('Falha ao gravar áudio.');
       cb.aoFim?.();
     };
 
-    this.reconhecimento = rec;
+    this.gravadorAtual = gravador;
 
     try {
-      console.log('[NEXO MIC] start');
-      rec.start();
+      gravador.start();
+      console.log('[NEXO MIC] start (MediaRecorder)');
     } catch {
-      this.reconhecimento = null;
-      if (this.cancelarEscutaAtual === cancelarSemEnviar) this.cancelarEscutaAtual = null;
-      if (this.finalizarEscutaAtual === concluir) this.finalizarEscutaAtual = null;
-      cancelarTemporizador();
-      cb.aoErro?.('Não foi possível iniciar a escuta. Tente clicar novamente no microfone.');
+      limpar();
+      cb.aoErro?.('Não foi possível iniciar a gravação. Tente novamente.');
       cb.aoFim?.();
     }
   }
 
   /**
-   * Cancelamento real: descarta a escuta ativa sem enviar nada. Uso: cleanup
-   * de unmount e qualquer ação explícita de cancelar — NUNCA a ação do botão
-   * de microfone durante 'listening' (isso é finalizarEscuta()).
+   * Cancelamento real: descarta a gravação ativa sem transcrever nem enviar
+   * nada. Uso: cleanup de unmount e qualquer ação explícita de cancelar —
+   * NUNCA a ação do botão de microfone durante 'listening' (isso é
+   * finalizarEscuta()).
    */
   pararEscuta(): void {
     console.log('[NEXO MIC] pararEscuta chamado');
@@ -309,21 +517,21 @@ class VozGemini implements ProvedorVoz {
       this.cancelarEscutaAtual();
       return;
     }
-    if (this.temporizadorSilencio) {
-      clearTimeout(this.temporizadorSilencio);
-      this.temporizadorSilencio = null;
+    if (this.gravadorAtual) {
+      try { this.gravadorAtual.stop(); } catch {}
+      this.gravadorAtual = null;
     }
-    if (this.reconhecimento) {
-      try { this.reconhecimento.stop(); } catch { try { this.reconhecimento.abort(); } catch {} }
-      this.reconhecimento = null;
+    if (this.streamAtual) {
+      this.streamAtual.getTracks().forEach((track) => track.stop());
+      this.streamAtual = null;
     }
   }
 
   /**
-   * Fallback manual: consolida acumulado + parcial da escuta ativa e dispara
-   * aoFinal — a mesma rota que o timer de silêncio/onend usam, então nunca
-   * duplica envio nem descarta texto. É o que o 2º clique no microfone chama.
-   * Sem sessão ativa, não faz nada (não há o que finalizar).
+   * Fallback manual: encerra a gravação ativa (2º clique no microfone) e
+   * dispara a transcrição — a mesma rota que o próprio navegador usaria se
+   * parasse a gravação sozinho, então nunca duplica envio nem descarta
+   * áudio já capturado. Sem sessão ativa, não faz nada.
    */
   finalizarEscuta(): void {
     console.log('[NEXO MIC] finalizarEscuta chamado');
