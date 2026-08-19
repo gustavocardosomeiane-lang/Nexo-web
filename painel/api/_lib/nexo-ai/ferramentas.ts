@@ -431,21 +431,87 @@ export const FERRAMENTAS_DADOS = Object.keys(CATALOGO);
    acima — código determinístico, nunca o modelo.
    -------------------------------------------------------------------------- */
 
-/** Detecção barata por palavra-chave, ANTES de gastar uma chamada ao modelo. */
-export function pareceComandoDeProspeccao(mensagem: string): boolean {
-  const t = mensagem
+function normalizarParaDeteccao(texto: string): string {
+  return texto
     .toLowerCase()
     .normalize('NFD')
     .replace(new RegExp('[\\u0300-\\u036f]', 'g'), '');
+}
 
-  const verbos = ['procure', 'procurar', 'busque', 'buscar', 'encontre', 'encontrar', 'prospecte', 'prospectar'];
+/**
+ * Sinal direto, numa mensagem só — sem olhar histórico.
+ *
+ * DESCOBERTA (fora do CRM) vs. LEITURA (dentro do CRM) são a mesma palavra
+ * "leads" na boca do usuário na maior parte das vezes — "3 leads novos" e
+ * "quantos leads eu tenho" compartilham o substantivo. Por isso a palavra
+ * sozinha nunca decide aqui: ou vem com um VERBO de descoberta
+ * (procure/buscar/traga/...), ou vem com um SINAL específico de
+ * descoberta ("leads novos", "sem site", "site ruim") que uma pergunta de
+ * leitura do CRM não usaria — e mesmo esse sinal recua na frente de um
+ * verbo de LEITURA explícito ("filtre os leads novos" continua leitura).
+ */
+function sinalDiretoDeProspeccao(mensagem: string): boolean {
+  const t = normalizarParaDeteccao(mensagem);
+
+  const verbosDescoberta = [
+    'procure', 'procurar', 'busque', 'buscar', 'encontre', 'encontrar',
+    'prospecte', 'prospectar', 'traga', 'trazer',
+  ];
   const contexto = [
     'empresa', 'empresas', 'negocio', 'negocios', 'cliente', 'clientes',
     'lead', 'leads', 'clinica', 'clinicas', 'loja', 'lojas', 'salao', 'saloes',
     'academia', 'academias', 'consultorio', 'consultorios', 'restaurante', 'restaurantes',
   ];
+  if (verbosDescoberta.some((v) => t.includes(v)) && contexto.some((c) => t.includes(c))) return true;
 
-  return verbos.some((v) => t.includes(v)) && contexto.some((c) => t.includes(c));
+  // "site ruim"/"sem site" só fazem sentido pedindo descoberta de negócio
+  // novo — ninguém filtra o próprio CRM por qualidade de site.
+  const sinaisSite = [
+    'sem site', 'site ruim', 'site quebrado', 'site desatualizado',
+    'sem presenca digital', 'presenca digital fraca', 'precisam de site', 'precisa de site',
+  ];
+  if (sinaisSite.some((s) => t.includes(s))) return true;
+
+  // "leads novos"/"novos leads" é forte, mas recua se vier junto de um
+  // verbo de LEITURA do CRM — "filtre os leads novos" não é prospecção.
+  const verbosLeituraCrm = ['filtre', 'filtrar', 'mostre', 'mostrar', 'liste', 'listar', 'quantos', 'quantas', 'quais sao'];
+  const combosNovosLeads = ['leads novos', 'novos leads', 'novo lead', 'clientes novos', 'novos clientes'];
+  if (combosNovosLeads.some((c) => t.includes(c)) && !verbosLeituraCrm.some((v) => t.includes(v))) return true;
+
+  return false;
+}
+
+/**
+ * Uma resposta em formato de formulário ("Nicho: ... / Localização: ... /
+ * Quantidade: ...") não tem verbo nenhum — não é uma FRASE, é dado
+ * estruturado. Só conta como prospecção se o turno anterior já estava
+ * nesse fluxo (ver `conversaRecenteEmProspeccao`).
+ */
+function pareceContinuacaoEstruturada(mensagem: string): boolean {
+  const t = normalizarParaDeteccao(mensagem);
+  const rotulos = ['nicho:', 'localizacao:', 'cidade:', 'quantidade:', 'segmento:', 'regiao:'];
+  return rotulos.filter((r) => t.includes(r)).length >= 2;
+}
+
+/** O usuário pediu uma descoberta de negócio recentemente nesta conversa? */
+function conversaRecenteEmProspeccao(historico: MensagemModelo[]): boolean {
+  // Só os últimos turnos — não reabre um fluxo de prospecção de muitas
+  // mensagens atrás só porque o assunto passou por perto antes.
+  const recentes = historico.slice(-6);
+  return recentes.some((m) => m.papel === 'user' && sinalDiretoDeProspeccao(m.conteudo));
+}
+
+/**
+ * Detecção barata por palavra-chave, ANTES de gastar uma chamada ao
+ * modelo. `historico` (já recortado pelo orçamento de tokens de quem
+ * chama) é o que permite reconhecer uma resposta estruturada
+ * ("Nicho: ... / Localização: ... / Quantidade: ...") como continuação de
+ * um pedido de prospecção começado num turno anterior, em vez de cair na
+ * leitura do CRM só porque a mensagem também menciona "leads".
+ */
+export function pareceComandoDeProspeccao(mensagem: string, historico: MensagemModelo[] = []): boolean {
+  if (sinalDiretoDeProspeccao(mensagem)) return true;
+  return pareceContinuacaoEstruturada(mensagem) && conversaRecenteEmProspeccao(historico);
 }
 
 const SISTEMA_EXTRACAO_PROSPECCAO = `Você extrai os parâmetros de uma busca de leads locais a partir do pedido do usuário — considerando a conversa INTEIRA, não só a última mensagem.

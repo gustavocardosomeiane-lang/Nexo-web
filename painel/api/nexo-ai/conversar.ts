@@ -148,67 +148,74 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const conversaId = await garantirConversa(db, usuarioId, entrada.conversa_id);
     console.log('[NEXO LATENCIA] garantirConversa', Date.now() - tConversa, 'ms');
 
-    /* ---- Dados reais: quais ferramentas esta mensagem pede.
-       Não depende de historico/memorias/empresa — só de `mensagem` e do papel
-       (já conhecido pela autenticação) — então pode ser calculado e disparado
-       em paralelo com o resto do contexto, em vez de numa segunda onda depois. ---- */
     const permitidas = ferramentasPermitidas(FERRAMENTAS_DADOS, (mod) =>
       podePorPapel(usuario.papel, mod),
     );
-    const necessarias = detectarFerramentas(mensagem, permitidas);
 
     /* ---- Contexto + ferramentas: tudo que não depende de resultado anterior, em paralelo ---- */
     const tContexto = Date.now();
     const tFerramentas = Date.now();
     const ctxFerramenta = { db, usuarioId, papel: usuario.papel };
-    const promessaFerramentas = (
-      necessarias.length > 0
-        ? Promise.all(
-            necessarias.map(async (nome) => ({
-              nome,
-              conteudo: await executarFerramenta(nome, {}, ctxFerramenta, permitidas),
-            })),
-          )
-        : Promise.resolve([])
-    ).then((r) => {
+
+    /* ---- Classificação da mensagem: prospecção (descobrir negócio NOVO,
+       fora do CRM) ou leitura (consultar o que já existe no CRM).
+
+       As DUAS coisas abaixo (`detectarFerramentas` e `pareceComandoDeProspeccao`)
+       disputam o MESMO vocabulário — "3 leads novos" e "quantos leads eu
+       tenho" compartilham a palavra "leads". Sem uma classificação única
+       decidindo primeiro, as duas rodavam em paralelo e o agregado "você já
+       tem 269 leads" entrava como DADO REAL ao lado da prospecção,
+       confundindo a resposta. A classificação também PRECISA do histórico —
+       uma resposta em formato de formulário ("Nicho: ... / Localização: ...
+       / Quantidade: ...") não tem verbo nenhum; só é reconhecida como
+       continuação de prospecção se o turno anterior já estava nesse fluxo.
+       Por isso a classificação encadeia em `promessaHistorico` em vez de
+       rodar solta. ---- */
+    const promessaHistorico = carregarHistorico(db, conversaId);
+    const podeProspectar = permitidas.includes('buscar_leads_locais');
+
+    const promessaClassificacao = promessaHistorico.then((historicoCarregado) => {
+      const historicoRecortado = recortarHistorico(historicoCarregado).map((m) => ({
+        papel: m.papel,
+        conteudo: m.conteudo,
+      }));
+      const ehProspeccao = podeProspectar && pareceComandoDeProspeccao(mensagem, historicoRecortado);
+      return { ehProspeccao, historicoRecortado };
+    });
+
+    const promessaFerramentas = promessaClassificacao.then(async ({ ehProspeccao }) => {
+      // Prospecção tem prioridade: quando a mensagem é sobre descobrir
+      // negócio novo, nenhuma ferramenta de leitura do CRM roda para ela —
+      // evita a resposta competir com o agregado de leads já existentes.
+      const necessarias = ehProspeccao ? [] : detectarFerramentas(mensagem, permitidas);
+      if (necessarias.length === 0) return [];
+      const resultados = await Promise.all(
+        necessarias.map(async (nome) => ({
+          nome,
+          conteudo: await executarFerramenta(nome, {}, ctxFerramenta, permitidas),
+        })),
+      );
       console.log('[NEXO LATENCIA] ferramentas', Date.now() - tFerramentas, 'ms');
-      return r;
+      return resultados;
     });
 
     /* ---- Prospecção automática (Etapa 4).
-       Intenção detectada por palavra-chave, de graça. Os PARÂMETROS
-       (nicho/cidade/quantidade) exigem uma extração pelo modelo — a ÚNICA
-       coisa que ele decide aqui. Busca, análise, score, dedup e importação
-       são código determinístico (executarBuscaEImportacao, em
-       ferramentas.ts) — o resultado real entra como "DADO REAL" abaixo,
-       igual a qualquer outra ferramenta.
-
-       A extração PRECISA do histórico — o pedido pode ter sido montado em
-       vários turnos ("procure clínicas" → "qual cidade?" → "Goiânia"). Por
-       isso `promessaProspeccao` encadeia em `promessaHistorico` em vez de
-       rodar em paralelo com ela: sem o histórico já carregado, a mensagem
-       mais recente sozinha ("Goiânia") nunca teria nicho pra ferramenta
-       aceitar, e a NEXO voltaria a perguntar o que o usuário já respondeu. ---- */
-    const promessaHistorico = carregarHistorico(db, conversaId);
-
-    const podeProspectar = permitidas.includes('buscar_leads_locais');
-    const tentarProspeccao = podeProspectar && pareceComandoDeProspeccao(mensagem);
-    const promessaProspeccao = tentarProspeccao
-      ? promessaHistorico.then(async (historicoParaExtracao) => {
-          const historicoRecortado = recortarHistorico(historicoParaExtracao).map((m) => ({
-            papel: m.papel,
-            conteudo: m.conteudo,
-          }));
-          const parametros = await extrairParametrosBusca(mensagem, historicoRecortado, modelo);
-          // `null` = o modelo não chamou a ferramenta (faltou nicho/cidade em
-          // TODA a conversa, ou a extração falhou). Sem "DADO REAL" pra este
-          // turno; a persona já instrui a NEXO a pedir o que falta em vez de
-          // adivinhar.
-          if (!parametros) return null;
-          const conteudo = await executarFerramenta('buscar_leads_locais', parametros, ctxFerramenta, permitidas);
-          return { nome: 'buscar_leads_locais', conteudo };
-        })
-      : Promise.resolve(null);
+       Os PARÂMETROS (nicho/cidade/quantidade) exigem uma extração pelo
+       modelo — a ÚNICA coisa que ele decide aqui. Busca, análise, score,
+       dedup e importação são código determinístico
+       (executarBuscaEImportacao, em ferramentas.ts) — o resultado real
+       entra como "DADO REAL" abaixo, igual a qualquer outra ferramenta. ---- */
+    const promessaProspeccao = promessaClassificacao.then(async ({ ehProspeccao, historicoRecortado }) => {
+      if (!ehProspeccao) return null;
+      const parametros = await extrairParametrosBusca(mensagem, historicoRecortado, modelo);
+      // `null` = o modelo não chamou a ferramenta (faltou nicho/cidade em
+      // TODA a conversa, ou a extração falhou). Sem "DADO REAL" pra este
+      // turno; a persona já instrui a NEXO a pedir o que falta em vez de
+      // adivinhar.
+      if (!parametros) return null;
+      const conteudo = await executarFerramenta('buscar_leads_locais', parametros, ctxFerramenta, permitidas);
+      return { nome: 'buscar_leads_locais', conteudo };
+    });
 
     const [historico, memorias, empresa, resultadosFerramentas, resultadoProspeccao] = await Promise.all([
       promessaHistorico,
