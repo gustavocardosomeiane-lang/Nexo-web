@@ -79,8 +79,30 @@ export class ErroGooglePlaces extends Error {
   }
 }
 
+/**
+ * Diagnóstico TEMPORÁRIO da credencial — investigação do 403 "The caller
+ * does not have permission". NUNCA loga a chave inteira: só existência,
+ * tamanho, os 4 primeiros caracteres (prefixo público de toda chave do
+ * Google Cloud, ex. "AIza" — não é segredo por si só) e uma marca fixa
+ * pros 2 últimos, sem revelar o valor real deles. `VERCEL_ENV` confirma se
+ * a função rodou mesmo sob o ambiente que tem a variável configurada.
+ */
+function logDiagnosticoCredencial(bruta: string, aparada: string): void {
+  console.log(
+    '[NEXO AI] Google Places diagnostico_credencial',
+    'existe=' + (bruta.length > 0 ? 'sim' : 'nao'),
+    'tamanho=' + aparada.length,
+    'prefixo=' + aparada.slice(0, 4),
+    'sufixo_mascarado=' + (aparada.length >= 2 ? '**' : ''),
+    'houve_trim=' + (bruta !== aparada ? 'sim' : 'nao'),
+    'ambiente=' + (process.env.VERCEL_ENV ?? 'desconhecido'),
+  );
+}
+
 function chaveGooglePlaces(): string {
-  const key = (process.env.GOOGLE_PLACES_API_KEY ?? '').trim();
+  const bruta = process.env.GOOGLE_PLACES_API_KEY ?? '';
+  const key = bruta.trim();
+  logDiagnosticoCredencial(bruta, key);
   if (!key) {
     throw new ErroGooglePlaces('GOOGLE_PLACES_API_KEY não configurada no servidor.', 500, 'sem_credencial');
   }
@@ -167,7 +189,17 @@ async function chamarGooglePlaces<T>(
   const dados = await resposta.json().catch(() => null);
 
   if (!resposta.ok) {
-    const erro = (dados as { error?: { message?: string } } | null)?.error;
+    const erro = (dados as { error?: { message?: string; status?: string; code?: number } } | null)?.error;
+    // Corpo de erro do Google é texto descritivo público (nunca ecoa a
+    // chave nem o corpo da requisição) — seguro pra log.
+    console.log(
+      '[NEXO AI] Google Places erro_corpo',
+      operacao,
+      'status_http=' + resposta.status,
+      'code=' + (erro?.code ?? 'ausente'),
+      'status_google=' + (erro?.status ?? 'ausente'),
+      'message=' + (erro?.message ?? 'ausente'),
+    );
     throw new ErroGooglePlaces(
       erro?.message ?? `Google Places respondeu ${resposta.status}.`,
       resposta.status,

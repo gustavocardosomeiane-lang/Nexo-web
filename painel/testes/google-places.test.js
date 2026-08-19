@@ -427,3 +427,98 @@ test('mapComConcorrenciaLimitada com lista vazia não quebra', async () => {
   const resultado = await mapComConcorrenciaLimitada([], 5, async (x) => x);
   assert.deepEqual(resultado, []);
 });
+
+/* ==========================================================================
+   Diagnóstico de credencial — investigação do 403 "The caller does not
+   have permission"
+
+   NUNCA testa a chave inteira aparecendo em log nenhum. Só confirma a FORMA
+   do diagnóstico: existência, tamanho, prefixo de 4 caracteres, marca fixa
+   pro sufixo (nunca os caracteres reais), detecção de trim, e que o corpo
+   de erro do Google (403 real, como o do incidente) fica visível sem
+   segredo nenhum.
+   ========================================================================== */
+
+function capturarLogs() {
+  const original = console.log;
+  const linhas = [];
+  console.log = (...args) => {
+    linhas.push(args.join(' '));
+  };
+  return { linhas, restaurar: () => { console.log = original; } };
+}
+
+test('diagnóstico de credencial: existe/tamanho/prefixo aparecem, a chave inteira NUNCA aparece', async () => {
+  process.env.GOOGLE_PLACES_API_KEY = 'AIzaSyExemploDeChaveDeQuarentaCaract';
+  criarFetchMock({ paginas: [{ places: [placeBruto()] }] });
+  const { linhas, restaurar } = capturarLogs();
+
+  await buscarCandidatosGooglePlaces('clínica', 'Goiânia', 1);
+  restaurar();
+
+  const linha = linhas.find((l) => l.includes('diagnostico_credencial'));
+  assert.ok(linha, 'esperava a linha de diagnóstico da credencial');
+  assert.match(linha, /existe=sim/);
+  assert.match(linha, new RegExp(`tamanho=${process.env.GOOGLE_PLACES_API_KEY.length}\\b`));
+  assert.match(linha, /prefixo=AIza/);
+  assert.match(linha, /sufixo_mascarado=\*\*/);
+  assert.match(linha, /houve_trim=nao/);
+
+  // A chave inteira não pode aparecer em NENHUMA linha logada.
+  const chaveCompleta = process.env.GOOGLE_PLACES_API_KEY;
+  assert.equal(linhas.some((l) => l.includes(chaveCompleta)), false);
+});
+
+test('diagnóstico de credencial: detecta trim (espaço/quebra de linha ao redor do valor)', async () => {
+  process.env.GOOGLE_PLACES_API_KEY = '  AIzaSyComEspacoAoRedor  \n';
+  criarFetchMock({ paginas: [{ places: [placeBruto()] }] });
+  const { linhas, restaurar } = capturarLogs();
+
+  await buscarCandidatosGooglePlaces('clínica', 'Goiânia', 1);
+  restaurar();
+
+  const linha = linhas.find((l) => l.includes('diagnostico_credencial'));
+  assert.match(linha, /houve_trim=sim/);
+});
+
+test('diagnóstico de credencial: chave ausente aparece como existe=nao, sem crashar', async () => {
+  delete process.env.GOOGLE_PLACES_API_KEY;
+  const { linhas, restaurar } = capturarLogs();
+
+  await assert.rejects(() => buscarCandidatosGooglePlaces('clínica', 'Goiânia', 1));
+  restaurar();
+
+  const linha = linhas.find((l) => l.includes('diagnostico_credencial'));
+  assert.match(linha, /existe=nao/);
+  assert.match(linha, /tamanho=0/);
+});
+
+test('403 "The caller does not have permission": corpo de erro do Google fica visível no log, sem segredo', async () => {
+  global.fetch = async () =>
+    respostaJson(
+      { error: { code: 403, status: 'PERMISSION_DENIED', message: 'The caller does not have permission' } },
+      403,
+    );
+  const { linhas, restaurar } = capturarLogs();
+
+  await assert.rejects(
+    () => buscarCandidatosGooglePlaces('clínica', 'Goiânia', 1),
+    (erro) => {
+      assert.ok(erro instanceof ErroGooglePlaces);
+      assert.equal(erro.status, 403);
+      assert.match(erro.message, /does not have permission/);
+      return true;
+    },
+  );
+  restaurar();
+
+  const linha = linhas.find((l) => l.includes('erro_corpo'));
+  assert.ok(linha, 'esperava a linha de diagnóstico do corpo de erro');
+  assert.match(linha, /status_http=403/);
+  assert.match(linha, /code=403/);
+  assert.match(linha, /status_google=PERMISSION_DENIED/);
+  assert.match(linha, /message=The caller does not have permission/);
+
+  const chave = process.env.GOOGLE_PLACES_API_KEY;
+  assert.equal(linhas.some((l) => l.includes(chave)), false);
+});
