@@ -181,14 +181,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
        coisa que ele decide aqui. Busca, análise, score, dedup e importação
        são código determinístico (executarBuscaEImportacao, em
        ferramentas.ts) — o resultado real entra como "DADO REAL" abaixo,
-       igual a qualquer outra ferramenta. ---- */
+       igual a qualquer outra ferramenta.
+
+       A extração PRECISA do histórico — o pedido pode ter sido montado em
+       vários turnos ("procure clínicas" → "qual cidade?" → "Goiânia"). Por
+       isso `promessaProspeccao` encadeia em `promessaHistorico` em vez de
+       rodar em paralelo com ela: sem o histórico já carregado, a mensagem
+       mais recente sozinha ("Goiânia") nunca teria nicho pra ferramenta
+       aceitar, e a NEXO voltaria a perguntar o que o usuário já respondeu. ---- */
+    const promessaHistorico = carregarHistorico(db, conversaId);
+
     const podeProspectar = permitidas.includes('buscar_leads_locais');
     const tentarProspeccao = podeProspectar && pareceComandoDeProspeccao(mensagem);
     const promessaProspeccao = tentarProspeccao
-      ? extrairParametrosBusca(mensagem, modelo).then(async (parametros) => {
-          // `null` = o modelo não chamou a ferramenta (faltou nicho/cidade,
-          // ou a extração falhou). Sem "DADO REAL" pra este turno; a persona
-          // já instrui a NEXO a pedir o que falta em vez de adivinhar.
+      ? promessaHistorico.then(async (historicoParaExtracao) => {
+          const historicoRecortado = recortarHistorico(historicoParaExtracao).map((m) => ({
+            papel: m.papel,
+            conteudo: m.conteudo,
+          }));
+          const parametros = await extrairParametrosBusca(mensagem, historicoRecortado, modelo);
+          // `null` = o modelo não chamou a ferramenta (faltou nicho/cidade em
+          // TODA a conversa, ou a extração falhou). Sem "DADO REAL" pra este
+          // turno; a persona já instrui a NEXO a pedir o que falta em vez de
+          // adivinhar.
           if (!parametros) return null;
           const conteudo = await executarFerramenta('buscar_leads_locais', parametros, ctxFerramenta, permitidas);
           return { nome: 'buscar_leads_locais', conteudo };
@@ -196,7 +211,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       : Promise.resolve(null);
 
     const [historico, memorias, empresa, resultadosFerramentas, resultadoProspeccao] = await Promise.all([
-      carregarHistorico(db, conversaId),
+      promessaHistorico,
       carregarMemorias(db, usuarioId),
       carregarContextoEmpresa(db),
       promessaFerramentas,

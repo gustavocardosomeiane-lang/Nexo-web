@@ -448,11 +448,15 @@ export function pareceComandoDeProspeccao(mensagem: string): boolean {
   return verbos.some((v) => t.includes(v)) && contexto.some((c) => t.includes(c));
 }
 
-const SISTEMA_EXTRACAO_PROSPECCAO = `Você extrai os parâmetros de uma busca de leads locais a partir do pedido do usuário.
+const SISTEMA_EXTRACAO_PROSPECCAO = `Você extrai os parâmetros de uma busca de leads locais a partir do pedido do usuário — considerando a conversa INTEIRA, não só a última mensagem.
 
 Se o usuário pedir para procurar, buscar ou encontrar empresas/negócios de um tipo numa cidade, chame a ferramenta buscar_leads_locais com nicho, cidade e, se ele disser um número, quantidade.
 
-Se faltar o nicho OU a cidade no pedido, NÃO chame nenhuma ferramenta — a falta dessa informação é tratada por outra parte do sistema; você não precisa responder nada aqui.`;
+O PEDIDO PODE TER SIDO MONTADO EM VÁRIAS MENSAGENS. Se o nicho foi dito numa mensagem anterior e a cidade só apareceu agora (ou vice-versa), combine as duas e chame a ferramenta — não trate como se faltasse informação só porque ela não está toda na última mensagem.
+
+Se o usuário mencionar "sem site", "site ruim", "site quebrado" ou algo parecido, ISSO NÃO É UM PARÂMETRO da ferramenta — é automático, a busca já prioriza esses casos sozinha. Nunca deixe de chamar a ferramenta, e nunca peça confirmação, por causa disso.
+
+NUNCA peça confirmação de um dado que o usuário já informou — em qualquer mensagem da conversa. Só deixe de chamar a ferramenta quando o nicho OU a cidade realmente nunca tiverem sido ditos; nesse caso, não chame nenhuma ferramenta — a falta dessa informação é tratada por outra parte do sistema, você não precisa responder nada aqui.`;
 
 /** Recorte mínimo de `ModeloProvider` — só o que esta função precisa, para poder ser testada com um provedor falso. */
 export interface ProvedorExtracao {
@@ -463,17 +467,25 @@ export interface ProvedorExtracao {
  * Chama o modelo SÓ para extrair nicho/cidade/quantidade — nunca para
  * decidir o que fazer com o resultado da busca.
  *
+ * `historico` é o que já foi dito ANTES desta mensagem, na mesma conversa —
+ * já recortado pelo orçamento de tokens de quem chama (mesmo histórico que
+ * a resposta final usa). SEM ISSO, um pedido de prospecção montado em dois
+ * turnos ("procure clínicas de estética" → "qual cidade?" → "Goiânia")
+ * nunca se completa: cada mensagem seria extraída isoladamente, e a segunda
+ * ("Goiânia") sozinha não tem nicho nenhum para a ferramenta exigir.
+ *
  * `null` quando o modelo não chamou a ferramenta (geralmente porque faltou
- * nicho ou cidade no pedido) ou quando a chamada ao modelo falhou — os dois
- * casos são tratados como "não é uma prospecção executável agora", nunca
- * como erro fatal da conversa: quem chama simplesmente segue sem os dados
- * de prospecção, e a resposta normal da NEXO conduz o resto.
+ * nicho ou cidade em toda a conversa) ou quando a chamada ao modelo falhou —
+ * os dois casos são tratados como "não é uma prospecção executável agora",
+ * nunca como erro fatal da conversa: quem chama simplesmente segue sem os
+ * dados de prospecção, e a resposta normal da NEXO conduz o resto.
  */
 export async function extrairParametrosBusca(
   mensagem: string,
+  historico: MensagemModelo[],
   provedor: ProvedorExtracao,
 ): Promise<Record<string, unknown> | null> {
-  const mensagens: MensagemModelo[] = [{ papel: 'user', conteudo: mensagem }];
+  const mensagens: MensagemModelo[] = [...historico, { papel: 'user', conteudo: mensagem }];
   try {
     const resposta = await provedor.conversar({
       sistema: SISTEMA_EXTRACAO_PROSPECCAO,
