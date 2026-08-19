@@ -199,9 +199,11 @@ async function executarBuscaEImportacao(
   } catch (e) {
     if (e instanceof ErroGooglePlaces) {
       console.error('[NEXO AI] prospecção — Google Places:', e.codigo, e.status, e.message);
+      console.log('[NEXO AI] prospecção etapa=ferramenta executou=nao motivo=google_places');
       throw new Error(mensagemAmigavelGoogle(e));
     }
     console.error('[NEXO AI] prospecção — falha inesperada na busca:', e instanceof Error ? e.message : e);
+    console.log('[NEXO AI] prospecção etapa=ferramenta executou=nao motivo=busca');
     throw new Error('Não foi possível buscar negócios locais agora. Tente de novo em instantes.');
   }
 
@@ -225,8 +227,16 @@ async function executarBuscaEImportacao(
     ({ inseridas, puladosPorConflito } = await importarLote(ctx.db, linhas));
   } catch (e) {
     console.error('[NEXO AI] prospecção — falha ao importar no Supabase:', e instanceof Error ? e.message : e);
+    console.log('[NEXO AI] prospecção etapa=ferramenta executou=nao motivo=supabase');
     throw new Error('Encontrei os leads, mas não consegui salvá-los agora. Tente de novo em instantes.');
   }
+
+  console.log(
+    '[NEXO AI] prospecção etapa=ferramenta',
+    'executou=sim',
+    'encontrados=' + preparados.length,
+    'importados=' + inseridas.length,
+  );
 
   return {
     solicitados: quantidade,
@@ -558,6 +568,7 @@ export async function extrairParametrosBusca(
       mensagens,
       ferramentas: definicoesDe(['buscar_leads_locais']),
       maxTokensSaida: 200,
+      etapa: 'extracao',
     });
     const chamada = resposta.chamadas.find((c: ChamadaFerramenta) => c.nome === 'buscar_leads_locais');
     return chamada?.argumentos ?? null;

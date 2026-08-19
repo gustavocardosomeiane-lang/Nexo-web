@@ -269,7 +269,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let textoAcumulado = '';
     let resultado: RespostaModelo | undefined;
 
-    const gerador = groqStream({ sistema: sistemaComDados, mensagens, maxTokensSaida: 512 });
+    const gerador = groqStream({ sistema: sistemaComDados, mensagens, maxTokensSaida: 512, etapa: 'resposta_final' });
     while (true) {
       const passo = await gerador.next();
       if (passo.done) {

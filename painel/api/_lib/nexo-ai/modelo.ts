@@ -46,6 +46,14 @@ export interface PedidoModelo {
     conteudo: string;
   }[];
   maxTokensSaida?: number;
+  /**
+   * Rótulo SÓ para diagnóstico ("extracao" | "resposta_final" | ...) — nunca
+   * vai para o Groq. Fica aqui em vez de hardcoded neste arquivo porque
+   * `modelo.ts` é um cliente genérico do Groq e não conhece os conceitos de
+   * negócio da NEXO (prospecção, extração); quem chama é que sabe o que a
+   * chamada representa.
+   */
+  etapa?: string;
 }
 
 export interface ModeloProvider {
@@ -153,7 +161,16 @@ function montarCorpoGroq(pedido: PedidoModelo, streaming = false): Record<string
       type: 'function',
       function: { name: f.nome, description: f.descricao, parameters: f.parametros },
     }));
+    // Explícito, não implícito: esta chamada TEM ferramenta e o modelo DECIDE
+    // se chama ou não ("auto" já é o padrão da API sem isso — só documentado
+    // aqui pra aparecer no log de diagnóstico, não muda comportamento).
+    corpo.tool_choice = 'auto';
   }
+  // Sem `pedido.ferramentas`, `tools` nunca é enviado — não existe
+  // `tool_choice` para setar (a API não aceita a chave sem `tools` junto).
+  // É esse o caso da chamada final de resposta: nenhuma ferramenta é
+  // oferecida, então o modelo estruturalmente não tem como tentar uma
+  // tool_call — ver a investigação registrada no commit deste arquivo.
 
   if (streaming) {
     corpo.stream = true;
@@ -163,6 +180,26 @@ function montarCorpoGroq(pedido: PedidoModelo, streaming = false): Record<string
   }
 
   return corpo;
+}
+
+/**
+ * Log de diagnóstico ANTES de mandar a requisição — nunca o conteúdo das
+ * mensagens, nunca a chave, só a FORMA da chamada: quantas mensagens, que
+ * papéis, se tem ferramenta e qual a política de escolha. É o que permite
+ * confirmar, num teste real, se a chamada final de resposta está (como
+ * deveria) sem nenhuma ferramenta oferecida — em vez de adivinhar pelos
+ * sintomas.
+ */
+function logPedidoGroq(corpo: Record<string, unknown>, etapa: string | undefined): void {
+  const mensagens = (corpo.messages as MensagemGroq[] | undefined) ?? [];
+  console.log(
+    '[NEXO AI] Groq ->',
+    'etapa=' + (etapa ?? 'desconhecida'),
+    'mensagens=' + mensagens.length,
+    'roles=' + mensagens.map((m) => m.role).join(','),
+    'tools=' + (Array.isArray(corpo.tools) ? 'sim' : 'nao'),
+    'tool_choice=' + (typeof corpo.tool_choice === 'string' ? corpo.tool_choice : 'n/a'),
+  );
 }
 
 function lerRespostaGroq(dados: Record<string, unknown>): RespostaModelo {
@@ -207,6 +244,8 @@ export const groqProvider: ModeloProvider = {
 
   async conversar(pedido: PedidoModelo): Promise<RespostaModelo> {
     const key = chaveGroq();
+    const corpo = montarCorpoGroq(pedido);
+    logPedidoGroq(corpo, pedido.etapa);
 
     const controlador = new AbortController();
     const timeoutId = setTimeout(() => controlador.abort(), GROQ_TIMEOUT_MS);
@@ -219,7 +258,7 @@ export const groqProvider: ModeloProvider = {
           Authorization: `Bearer ${key}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(montarCorpoGroq(pedido)),
+        body: JSON.stringify(corpo),
         signal: controlador.signal,
       });
     } catch (e) {
@@ -288,6 +327,8 @@ async function* blocosSSE(corpo: ReadableStream<Uint8Array> | null): AsyncGenera
  */
 export async function* groqStream(pedido: PedidoModelo): AsyncGenerator<string, RespostaModelo, void> {
   const key = chaveGroq();
+  const corpo = montarCorpoGroq(pedido, true);
+  logPedidoGroq(corpo, pedido.etapa);
   const controlador = new AbortController();
   const timeoutId = setTimeout(() => controlador.abort(), GROQ_TIMEOUT_MS);
 
@@ -299,7 +340,7 @@ export async function* groqStream(pedido: PedidoModelo): AsyncGenerator<string, 
         Authorization: `Bearer ${key}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(montarCorpoGroq(pedido, true)),
+      body: JSON.stringify(corpo),
       signal: controlador.signal,
     });
   } catch (e) {
@@ -324,6 +365,17 @@ export async function* groqStream(pedido: PedidoModelo): AsyncGenerator<string, 
 
   let texto = '';
   let tokens = { entrada: 0, saida: 0 };
+  // Diagnóstico da investigação do "Groq não retornou resposta": conta o
+  // que realmente veio em cada chunk, em vez de só reagir ao resultado
+  // final. `chunksComToolCalls` NUNCA deveria ficar > 0 aqui — esta chamada
+  // não oferece `tools` (ver logPedidoGroq acima), então o modelo
+  // estruturalmente não tem ferramenta nenhuma pra tentar chamar. Se
+  // aparecer mesmo assim, é sinal de comportamento inesperado da API e fica
+  // registrado, nunca engolido em silêncio.
+  let chunksTotal = 0;
+  let chunksComContent = 0;
+  let chunksComToolCalls = 0;
+  let finishReason: string | null = null;
   try {
     for await (const bloco of blocosSSE(resposta.body)) {
       for (const linha of bloco.split('\n')) {
@@ -338,6 +390,7 @@ export async function* groqStream(pedido: PedidoModelo): AsyncGenerator<string, 
         } catch {
           continue;
         }
+        chunksTotal += 1;
 
         const uso = json.usage as Record<string, number> | undefined;
         if (uso) {
@@ -345,11 +398,22 @@ export async function* groqStream(pedido: PedidoModelo): AsyncGenerator<string, 
         }
 
         const choices = Array.isArray(json.choices) ? json.choices : [];
-        const delta = (choices[0] as Record<string, unknown> | undefined)?.delta as Record<string, unknown> | undefined;
+        const primeiraEscolha = choices[0] as Record<string, unknown> | undefined;
+        const delta = primeiraEscolha?.delta as Record<string, unknown> | undefined;
+
+        if (typeof primeiraEscolha?.finish_reason === 'string') {
+          finishReason = primeiraEscolha.finish_reason as string;
+        }
+
         const pedaco = typeof delta?.content === 'string' ? delta.content : '';
         if (pedaco) {
+          chunksComContent += 1;
           texto += pedaco;
           yield pedaco;
+        }
+
+        if (Array.isArray(delta?.tool_calls) && delta.tool_calls.length > 0) {
+          chunksComToolCalls += 1;
         }
       }
     }
@@ -359,6 +423,15 @@ export async function* groqStream(pedido: PedidoModelo): AsyncGenerator<string, 
   } finally {
     clearTimeout(timeoutId);
   }
+
+  console.log(
+    '[NEXO AI] Groq <-',
+    'etapa=' + (pedido.etapa ?? 'desconhecida'),
+    'chunks=' + chunksTotal,
+    'chunks_com_content=' + chunksComContent,
+    'chunks_com_tool_calls=' + chunksComToolCalls,
+    'finish_reason=' + (finishReason ?? 'ausente'),
+  );
 
   if (!texto.trim()) {
     throw new ErroModelo('O Groq não retornou uma resposta.', 500, 'sem_resposta');
