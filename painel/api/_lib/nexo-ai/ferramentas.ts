@@ -532,7 +532,9 @@ O PEDIDO PODE TER SIDO MONTADO EM VÁRIAS MENSAGENS. Se o nicho foi dito numa me
 
 Se o usuário mencionar "sem site", "site ruim", "site quebrado" ou algo parecido, ISSO NÃO É UM PARÂMETRO da ferramenta — é automático, a busca já prioriza esses casos sozinha. Nunca deixe de chamar a ferramenta, e nunca peça confirmação, por causa disso.
 
-NUNCA peça confirmação de um dado que o usuário já informou — em qualquer mensagem da conversa. Só deixe de chamar a ferramenta quando o nicho OU a cidade realmente nunca tiverem sido ditos; nesse caso, não chame nenhuma ferramenta — a falta dessa informação é tratada por outra parte do sistema, você não precisa responder nada aqui.`;
+NUNCA peça confirmação de um dado que o usuário já informou — em qualquer mensagem da conversa. Só deixe de chamar a ferramenta quando o nicho OU a cidade realmente nunca tiverem sido ditos; nesse caso, não chame nenhuma ferramenta — a falta dessa informação é tratada por outra parte do sistema, você não precisa responder nada aqui.
+
+Se precisar escrever algum texto (por exemplo, ao pedir a informação que falta), responda exclusivamente em português do Brasil.`;
 
 /** Recorte mínimo de `ModeloProvider` — só o que esta função precisa, para poder ser testada com um provedor falso. */
 export interface ProvedorExtracao {

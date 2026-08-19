@@ -23,7 +23,14 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { autenticar, responderNaoAutenticado, NaoAutenticado } from '../_lib/auth.js';
-import { provedorAtivo, groqStream, ErroModelo, type MensagemModelo, type RespostaModelo } from '../_lib/nexo-ai/modelo.js';
+import {
+  provedorAtivo,
+  groqStream,
+  ErroModelo,
+  type MensagemModelo,
+  type PedidoModelo,
+  type RespostaModelo,
+} from '../_lib/nexo-ai/modelo.js';
 import {
   definicoesDe,
   executarFerramenta,
@@ -37,6 +44,9 @@ import {
   recortarHistorico,
   selecionarMemorias,
   redigirSegredos,
+  usuarioPediuArabe,
+  proximoTrechoSeguro,
+  liberarRestante,
   type Memoria,
   type MensagemChat,
 } from '../../shared/regras-nexo-ai.js';
@@ -158,6 +168,173 @@ export function respostaFallbackProspeccao(conteudoJson: string): string | null 
     return `Busca concluída. Encontrei ${encontrados} ${empresas} e importei ${importados} ${leads} que ainda não ${estavam} cadastrado${importados === 1 ? '' : 's'}.`;
   }
   return `Busca concluída. Analisei ${encontrados} ${empresas}, mas nenhuma nova passou pelos critérios ou todas já estavam cadastradas.`;
+}
+
+/* --------------------------------------------------------------------------
+   Idioma da resposta — defesa contra o incidente de mistura com árabe
+
+   `groqStream` já entrega SÓ `content` (nunca raciocínio — ver modelo.ts),
+   mas o próprio `content` pode vir com árabe misturado: incidente real em
+   produção com openai/gpt-oss-20b. A defesa é na SAÍDA da chamada, nunca na
+   entrada — dado de lead/memória pode legitimamente ter caractere
+   estrangeiro, então "limpar" o contexto não resolveria e ainda corromperia
+   dado real.
+
+   ESTRATÉGIA (streaming progressivo preservado): em vez de esperar a
+   resposta inteira antes de mandar qualquer coisa, mantém-se uma pequena
+   JANELA DE SEGURANÇA (`MARGEM_SEGURANCA_IDIOMA` caracteres) sempre retida
+   no fim do texto ainda não confirmado — só o que já "sobrou pra trás" da
+   margem é liberado ao cliente. Ver `proximoTrechoSeguro` em
+   shared/regras-nexo-ai.ts para a prova de que isso garante que nada
+   liberado pode conter árabe. Resultado prático: resposta normal em pt-BR
+   continua chegando em streaming quase em tempo real (a margem é pequena);
+   só quando árabe realmente aparece é que a entrega para.
+   -------------------------------------------------------------------------- */
+
+/** Reforço adicionado ao sistema SÓ na tentativa de regeneração — nunca na primeira chamada, para não pagar tokens à toa quando o idioma já sai certo (o caso comum). */
+const REFORCO_PT_BR =
+  '\n\n---\n\nATENÇÃO: a resposta anterior misturou caracteres de outro idioma (árabe) de forma indevida. Responda AGORA exclusivamente em português do Brasil, sem nenhum caractere árabe. Preserve nomes próprios, marcas e termos técnicos como estão.';
+
+type ResultadoConsumoSeguro =
+  | { status: 'completo'; resultado: RespostaModelo }
+  /** Árabe apareceu, mas a margem segurou tudo — NADA chegou ao cliente ainda. Seguro regenerar do zero. */
+  | { status: 'bloqueado_sem_envio' }
+  /** Árabe apareceu DEPOIS de parte do texto já ter sido liberada. O que já foi liberado é garantidamente limpo (ver invariante em `proximoTrechoSeguro`), mas não dá pra continuar nem regenerar por cima sem risco de resposta incoerente. */
+  | { status: 'bloqueado_parcial'; textoEnviado: string };
+
+/**
+ * Consome `groqStream` liberando trechos ao cliente (`enviarChunk`)
+ * conforme chegam, sempre atrás da margem de segurança. Para de consumir o
+ * gerador (fecha a stream) no instante em que árabe aparece — nunca lê nem
+ * decide em cima do resto da resposta depois disso.
+ */
+async function consumirComFiltroIdioma(
+  pedido: PedidoModelo,
+  enviarChunk: (texto: string) => void,
+): Promise<ResultadoConsumoSeguro> {
+  const gerador = groqStream(pedido);
+  let textoBruto = '';
+  let liberadoAte = 0;
+
+  while (true) {
+    const passo = await gerador.next();
+    if (passo.done) {
+      // Terminou sem nunca ter sido bloqueado — libera o que ainda estava
+      // retido na margem (é a última fatia, não tem mais texto vindo atrás
+      // dela pra justificar retê-la).
+      const restante = liberarRestante(textoBruto, liberadoAte);
+      if (restante) enviarChunk(restante);
+      return { status: 'completo', resultado: passo.value };
+    }
+
+    textoBruto += passo.value;
+    const passoFiltro = proximoTrechoSeguro(textoBruto, liberadoAte);
+    liberadoAte = passoFiltro.liberadoAte;
+    if (passoFiltro.trecho) enviarChunk(passoFiltro.trecho);
+
+    if (passoFiltro.bloqueado) {
+      // Valor de retorno descartado — só encerra o gerador (fecha o reader
+      // da SSE do Groq) sem consumir o resto da resposta.
+      await gerador.return({ texto: '', chamadas: [], tokens: { entrada: 0, saida: 0 } }).catch(() => {});
+      return liberadoAte > 0
+        ? { status: 'bloqueado_parcial', textoEnviado: textoBruto.slice(0, liberadoAte) }
+        : { status: 'bloqueado_sem_envio' };
+    }
+  }
+}
+
+/**
+ * Gera a resposta final já validada quanto a idioma, transmitindo em
+ * streaming — NUNCA entrega ao cliente um caractere árabe inesperado.
+ *
+ * Três desfechos possíveis:
+ *   1. Idioma correto do início ao fim → streaming normal, sem regeneração.
+ *   2. Árabe aparece ANTES de qualquer chunk ter sido enviado → descarta,
+ *      regenera 1x com instrução reforçada (também em streaming filtrado).
+ *      Se a regeneração falhar ou ainda vier com árabe antes de enviar
+ *      algo, lança `ErroModelo('idioma_incorreto')` — quem chama decide o
+ *      fallback (nunca uma 3ª tentativa).
+ *   3. Árabe aparece DEPOIS de parte do texto já ter sido enviada → a
+ *      resposta termina ali mesmo, no último ponto confirmadamente limpo.
+ *      NÃO regenera por cima (concatenar texto novo depois de um corte no
+ *      meio de uma frase pode produzir resposta incoerente) e NÃO usa o
+ *      fallback da prospecção nesse caso, pelo mesmo motivo — o cliente já
+ *      viu um começo de resposta; a coisa mais coerente é fechar ali, não
+ *      emendar um texto diferente em cima.
+ *
+ * `permiteArabe` vem de `usuarioPediuArabe(mensagem)`, calculado uma vez por
+ * turno: se o usuário pediu árabe explicitamente, todo este filtro é
+ * ignorado — streaming puro, idêntico ao de antes desta correção.
+ */
+export async function gerarRespostaFinalSegura(
+  pedidoBase: PedidoModelo,
+  permiteArabe: boolean,
+  enviarChunk: (texto: string) => void,
+): Promise<RespostaModelo> {
+  if (permiteArabe) {
+    const gerador = groqStream(pedidoBase);
+    while (true) {
+      const passo = await gerador.next();
+      if (passo.done) return passo.value;
+      enviarChunk(passo.value);
+    }
+  }
+
+  const primeira = await consumirComFiltroIdioma(pedidoBase, enviarChunk);
+  if (primeira.status === 'completo') return primeira.resultado;
+
+  if (primeira.status === 'bloqueado_parcial') {
+    console.error(
+      '[NEXO AI] idioma_incorreto',
+      'etapa=' + (pedidoBase.etapa ?? 'desconhecida'),
+      'motivo=arabe_apos_envio_parcial',
+      'tamanho_ja_enviado=' + primeira.textoEnviado.length,
+      '— encerrando a resposta no último ponto confirmadamente limpo, sem regenerar por cima',
+    );
+    return { texto: primeira.textoEnviado, chamadas: [], tokens: { entrada: 0, saida: 0 } };
+  }
+
+  // bloqueado_sem_envio: nada chegou ao cliente ainda — seguro regenerar.
+  console.error(
+    '[NEXO AI] idioma_incorreto',
+    'etapa=' + (pedidoBase.etapa ?? 'desconhecida'),
+    'motivo=arabe_antes_do_envio',
+    '— regenerando 1x com instrução reforçada de pt-BR',
+  );
+
+  const pedidoReforcado: PedidoModelo = {
+    ...pedidoBase,
+    sistema: pedidoBase.sistema + REFORCO_PT_BR,
+    etapa: 'resposta_final_regeneracao',
+  };
+  const segunda = await consumirComFiltroIdioma(pedidoReforcado, enviarChunk).catch((e: unknown) => {
+    console.error('[NEXO AI] idioma_incorreto — regeneração falhou:', e instanceof Error ? e.message : String(e));
+    return null;
+  });
+
+  if (segunda === null) {
+    throw new ErroModelo('A NEXO não conseguiu manter a resposta em português agora.', 500, 'idioma_incorreto');
+  }
+  if (segunda.status === 'completo') return segunda.resultado;
+  if (segunda.status === 'bloqueado_parcial') {
+    console.error(
+      '[NEXO AI] idioma_incorreto',
+      'etapa=resposta_final_regeneracao',
+      'motivo=arabe_apos_envio_parcial',
+      'tamanho_ja_enviado=' + segunda.textoEnviado.length,
+      '— encerrando a resposta no último ponto confirmadamente limpo, sem 3ª tentativa',
+    );
+    return { texto: segunda.textoEnviado, chamadas: [], tokens: { entrada: 0, saida: 0 } };
+  }
+
+  // bloqueado_sem_envio de novo, mesmo na regeneração — desiste. Nunca uma 3ª tentativa.
+  console.error(
+    '[NEXO AI] idioma_incorreto',
+    'etapa=resposta_final_regeneracao',
+    'motivo=arabe_persistiu',
+    '— sem nova tentativa, quem chama decide o fallback',
+  );
+  throw new ErroModelo('A NEXO não conseguiu manter a resposta em português agora.', 500, 'idioma_incorreto');
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -300,11 +477,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       sistemaComDados = `${sistema}\n\n---\n\n${contextoDados}\nUse somente esses dados reais para responder à pergunta. Não invente números.`;
     }
 
-    /* ---- Exatamente uma chamada ao modelo por mensagem do usuário, em
-       streaming. Groq (openai/gpt-oss-20b) é o único provedor de texto —
-       ver modelo.ts. Cabeçalhos SSE só são escritos aqui, depois que auth,
-       sessão e contexto já resolveram sem erro — se algo acima falhar, o
-       cliente ainda recebe um JSON de erro normal (ver catch). ---- */
+    /* ---- Uma chamada ao modelo por mensagem do usuário (mais uma, no
+       máximo, só se precisar regenerar por idioma — ver
+       gerarRespostaFinalSegura). Groq (openai/gpt-oss-20b) é o único
+       provedor de texto — ver modelo.ts. O texto continua chegando ao
+       cliente em streaming, chunk a chunk, como sempre — só que atrás de
+       uma pequena margem de segurança que verifica árabe antes de cada
+       liberação (ver o comentário grande acima de `gerarRespostaFinalSegura`).
+       Cabeçalhos SSE só são escritos aqui, depois que auth, sessão e
+       contexto já resolveram sem erro — se algo acima falhar, o cliente
+       ainda recebe um JSON de erro normal (ver catch). ---- */
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
@@ -320,30 +502,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let textoAcumulado = '';
     let resultado: RespostaModelo | undefined;
 
-    try {
-      const gerador = groqStream({ sistema: sistemaComDados, mensagens, maxTokensSaida: 512, etapa: 'resposta_final' });
-      while (true) {
-        const passo = await gerador.next();
-        if (passo.done) {
-          resultado = passo.value;
-          break;
-        }
-        if (tPrimeiroChunk === null) {
-          tPrimeiroChunk = Date.now();
-          console.log('[NEXO LATENCIA] primeiro_chunk_modelo', tPrimeiroChunk - tModelo, 'ms');
-          console.log('[NEXO LATENCIA] primeiro_chunk_cliente', tPrimeiroChunk - tInicio, 'ms');
-        }
-        textoAcumulado += passo.value;
-        enviarFrame(res, { tipo: 'chunk', texto: passo.value });
+    // Calculado da mensagem ATUAL, não do histórico: pedir árabe há vários
+    // turnos não autoriza o modelo a continuar nesse idioma para sempre.
+    const permiteArabe = usuarioPediuArabe(mensagem);
+
+    const enviarChunkAoCliente = (texto: string) => {
+      if (tPrimeiroChunk === null) {
+        tPrimeiroChunk = Date.now();
+        console.log('[NEXO LATENCIA] primeiro_chunk_modelo', tPrimeiroChunk - tModelo, 'ms');
+        console.log('[NEXO LATENCIA] primeiro_chunk_cliente', tPrimeiroChunk - tInicio, 'ms');
       }
+      textoAcumulado += texto;
+      enviarFrame(res, { tipo: 'chunk', texto });
+    };
+
+    try {
+      resultado = await gerarRespostaFinalSegura(
+        { sistema: sistemaComDados, mensagens, maxTokensSaida: 512, etapa: 'resposta_final' },
+        permiteArabe,
+        enviarChunkAoCliente,
+      );
     } catch (erroRespostaFinal) {
-      // A etapa de texto final falhou (sem conteúdo utilizável, timeout,
-      // erro do Groq — qualquer motivo). Se a prospecção já rodou com
-      // sucesso NESTA mesma requisição, o resultado real já existe e não
-      // depende do Groq: usa ele para montar uma resposta determinística,
-      // em vez de jogar fora um trabalho que já terminou. Nem a ferramenta
-      // nem o Google Places são chamados de novo aqui — `resultadoProspeccao`
-      // é só reaproveitado do que já rodou antes desta chamada ao modelo.
+      // A etapa de texto final falhou de forma irrecuperável (sem conteúdo
+      // utilizável, timeout, erro do Groq, ou árabe que persistiu mesmo
+      // após a única regeneração — sempre ANTES de qualquer chunk ter
+      // chegado ao cliente; ver gerarRespostaFinalSegura). Se a prospecção
+      // já rodou com sucesso NESTA mesma requisição, o resultado real já
+      // existe e não depende do Groq: usa ele para montar uma resposta
+      // determinística, em vez de jogar fora um trabalho que já terminou.
+      // Nem a ferramenta nem o Google Places são chamados de novo aqui —
+      // `resultadoProspeccao` é só reaproveitado do que já rodou antes
+      // desta chamada ao modelo.
       const fallback = resultadoProspeccao ? respostaFallbackProspeccao(resultadoProspeccao.conteudo) : null;
       if (fallback === null) throw erroRespostaFinal;
 
@@ -351,8 +540,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         '[NEXO AI] resposta_final sem conteúdo utilizável do Groq — usando fallback determinístico da prospecção:',
         erroRespostaFinal instanceof Error ? erroRespostaFinal.message : String(erroRespostaFinal),
       );
-      textoAcumulado = fallback;
-      enviarFrame(res, { tipo: 'chunk', texto: fallback });
+      enviarChunkAoCliente(fallback);
       resultado = { texto: fallback, chamadas: [], tokens: { entrada: 0, saida: 0 } };
     }
     console.log('[NEXO LATENCIA] modelo_total', Date.now() - tModelo, 'ms');

@@ -365,6 +365,125 @@ export function finalizarSegmentacao(restante: string): string | null {
 }
 
 /* ==========================================================================
+   8. IDIOMA DA RESPOSTA — detecção de contaminação por árabe
+
+   INCIDENTE: a resposta final da NEXO (Groq, openai/gpt-oss-20b) às vezes
+   inseria trechos em árabe no meio de uma explicação em português. Nenhum
+   prompt estático do projeto contém árabe (conferido por busca em todo
+   `api/`, `src/` e `shared/`) — é troca de idioma do próprio modelo, não
+   contaminação de dado nosso. A defesa certa por isso é na SAÍDA (o que o
+   modelo devolveu), nunca tentar filtrar a ENTRADA: dado de lead/memória
+   pode legitimamente ter caractere estrangeiro (nome de empresa, endereço)
+   e "limpar" isso na entrada corromperia dado real sem resolver o sintoma.
+   ========================================================================== */
+
+/**
+ * Faixas Unicode do alfabeto árabe e extensões relacionadas — o bastante
+ * para pegar o caso real do incidente, sem tentar ser um detector de idioma
+ * completo. Em `\uXXXX` (não o caractere literal) de propósito: precisão
+ * auditável num arquivo de segurança, sem depender do editor/encoding
+ * preservar corretamente um caractere árabe colado no código-fonte.
+ *
+ *   U+0600–U+06FF  Arabic
+ *   U+0750–U+077F  Arabic Supplement
+ *   U+08A0–U+08FF  Arabic Extended-A
+ *   U+FB50–U+FDFF  Arabic Presentation Forms-A
+ *   U+FE70–U+FEFE  Arabic Presentation Forms-B
+ *
+ * `U+FEFF` (BOM, usado no export de CSV em `src/lib/exportar.ts`) fica de
+ * FORA do último bloco de propósito: é pontuação invisível de codificação,
+ * não um caractere árabe — incluí-la seria falso positivo.
+ */
+const FAIXA_ARABE = new RegExp('[\\u0600-\\u06FF\\u0750-\\u077F\\u08A0-\\u08FF\\uFB50-\\uFDFF\\uFE70-\\uFEFE]', 'g');
+
+/** A resposta contém algum caractere de escrita árabe? */
+export function contemCaracteresArabes(texto: string): boolean {
+  FAIXA_ARABE.lastIndex = 0;
+  return FAIXA_ARABE.test(String(texto ?? ''));
+}
+
+/** Quantos caracteres árabes aparecem — só para o log de diagnóstico (nunca o texto em si). */
+export function contarCaracteresArabes(texto: string): number {
+  FAIXA_ARABE.lastIndex = 0;
+  return String(texto ?? '').match(FAIXA_ARABE)?.length ?? 0;
+}
+
+/** Índice do primeiro caractere árabe em `texto`, ou -1 se não houver nenhum. */
+function primeiroIndiceArabe(texto: string): number {
+  FAIXA_ARABE.lastIndex = 0;
+  const m = FAIXA_ARABE.exec(texto);
+  return m ? m.index : -1;
+}
+
+/**
+ * Tamanho da janela retida em buffer antes de liberar qualquer trecho ao
+ * cliente durante o streaming da resposta final. Grande o bastante pra
+ * pegar a maioria dos casos reais de contaminação por árabe (que tendem a
+ * aparecer em rajadas de várias letras, não um caractere isolado) antes de
+ * ele ser transmitido; pequeno o bastante pra não ser perceptível como
+ * atraso na experiência de "digitando" da NEXO.
+ */
+export const MARGEM_SEGURANCA_IDIOMA = 64;
+
+export interface PassoFiltroIdioma {
+  /** Trecho novo, seguro para enviar agora — '' quando nada ficou liberável neste passo, ou quando `bloqueado`. */
+  trecho: string;
+  /** Até onde (índice em `textoAcumulado`) já foi liberado ao todo, contando este passo. */
+  liberadoAte: number;
+  /** true assim que árabe aparece no texto acumulado além do que já foi liberado — quem chama deve parar de consumir o stream: nada mais será liberado nesta tentativa. */
+  bloqueado: boolean;
+}
+
+/**
+ * Decide quanto de `textoAcumulado` pode ser liberado ao cliente AGORA,
+ * mantendo sempre `margem` caracteres retidos no final — texto "ainda por
+ * vir" o bastante pra um trecho árabe ser pego antes de ser transmitido.
+ * Chamada uma vez por chunk recebido do modelo, sempre com o texto
+ * ACUMULADO inteiro (nunca só o chunk novo): é o único jeito de garantir
+ * que nada seja liberado antes de sobreviver pelo menos uma rodada dentro
+ * da margem.
+ *
+ * INVARIANTE que sustenta a segurança: como só se libera até
+ * `length - margem`, e o texto só cresce por append (o modelo nunca reedita
+ * o que já mandou), qualquer árabe que apareça está SEMPRE numa posição
+ * >= `liberadoAte` no momento em que aparece — nunca dentro do que já foi
+ * liberado antes. Por isso, uma vez `bloqueado`, o que já foi liberado até
+ * aqui continua garantidamente limpo.
+ */
+export function proximoTrechoSeguro(
+  textoAcumulado: string,
+  liberadoAte: number,
+  margem: number = MARGEM_SEGURANCA_IDIOMA,
+): PassoFiltroIdioma {
+  if (primeiroIndiceArabe(textoAcumulado) !== -1) {
+    return { trecho: '', liberadoAte, bloqueado: true };
+  }
+  const limite = Math.max(liberadoAte, textoAcumulado.length - margem);
+  return { trecho: textoAcumulado.slice(liberadoAte, limite), liberadoAte: limite, bloqueado: false };
+}
+
+/**
+ * Libera o que sobrou retido na margem — chamada só quando o stream
+ * terminou por completo SEM nunca ter sido bloqueado (`primeiroIndiceArabe`
+ * nunca achou nada em nenhuma chamada de `proximoTrechoSeguro` anterior).
+ */
+export function liberarRestante(textoAcumulado: string, liberadoAte: number): string {
+  return textoAcumulado.slice(liberadoAte);
+}
+
+/**
+ * O usuário pediu árabe explicitamente NESTE turno? Cobre os dois jeitos
+ * naturais de pedir: escrever a mensagem em árabe (o pedido já está no
+ * idioma) ou pedir em português ("responda em árabe", "fale em árabe").
+ * Decide só pela mensagem ATUAL — pedir árabe há 10 turnos não autoriza o
+ * modelo a continuar nesse idioma para sempre.
+ */
+export function usuarioPediuArabe(mensagemUsuario: string): boolean {
+  if (contemCaracteresArabes(mensagemUsuario)) return true;
+  return normalizar(mensagemUsuario).includes('arabe');
+}
+
+/* ==========================================================================
    7. COOLDOWN DE TTS — extração segura do tempo de espera num 429
 
    Genérico por design: não assume o formato de erro de um provedor
