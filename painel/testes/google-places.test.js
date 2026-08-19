@@ -53,6 +53,16 @@ function respostaJson(corpo, status = 200) {
   };
 }
 
+/**
+ * Endpoints EXATOS da Places API (New) — o mock só responde a estes dois,
+ * caractere por caractere. Um mock leniente (ex.: `url.endsWith(':searchText')`)
+ * teria aceitado `.../v1:searchText` (a URL com bug real que causou o 404 em
+ * produção) como se fosse `.../v1/places:searchText` — por isso a checagem
+ * aqui é de igualdade e prefixo exatos, não substring.
+ */
+const URL_TEXT_SEARCH = 'https://places.googleapis.com/v1/places:searchText';
+const PREFIXO_PLACE_DETAILS = 'https://places.googleapis.com/v1/places/';
+
 /** Mock de fetch que roteia por URL: searchText vs places/{id}. */
 function criarFetchMock({ paginas = [{ places: [placeBruto()] }], detalhes = {}, statusErro = null }) {
   const chamadas = { busca: [], detalhes: [] };
@@ -61,7 +71,7 @@ function criarFetchMock({ paginas = [{ places: [placeBruto()] }], detalhes = {},
   const fetchMock = async (url, opcoes) => {
     const corpo = opcoes.body ? JSON.parse(opcoes.body) : undefined;
 
-    if (url.endsWith(':searchText')) {
+    if (url === URL_TEXT_SEARCH) {
       chamadas.busca.push({ url, headers: opcoes.headers, corpo });
       if (statusErro) return respostaJson({ error: { message: 'cota excedida' } }, statusErro);
       const pagina = paginas[Math.min(indicePagina, paginas.length - 1)];
@@ -69,20 +79,95 @@ function criarFetchMock({ paginas = [{ places: [placeBruto()] }], detalhes = {},
       return respostaJson(pagina);
     }
 
-    if (url.includes('/places/')) {
-      const placeId = decodeURIComponent(url.split('/places/')[1]);
+    if (url.startsWith(PREFIXO_PLACE_DETAILS)) {
+      const placeId = decodeURIComponent(url.slice(PREFIXO_PLACE_DETAILS.length));
       chamadas.detalhes.push({ url, headers: opcoes.headers, placeId });
       const detalhe = detalhes[placeId];
       if (!detalhe) return respostaJson({ error: { message: 'não encontrado' } }, 404);
       return respostaJson(detalhe);
     }
 
-    throw new Error(`URL inesperada no mock: ${url}`);
+    // Qualquer outra URL — inclusive uma quase certa, como a antiga
+    // ".../v1:searchText" sem "/places" — falha o teste alto e claro, em vez
+    // de silenciosamente "funcionar" contra um endpoint errado.
+    throw new Error(`URL inesperada no mock (não é um endpoint real da Places API New): ${url}`);
   };
 
   global.fetch = fetchMock;
   return chamadas;
 }
+
+/* ==========================================================================
+   URL EXATA — regressão do incidente de produção (404)
+
+   Um Text Search sem "/places" antes de ":searchText" foi parar em produção
+   e devolveu 404 do Google — porque o mock anterior aceitava QUALQUER coisa
+   terminada em ":searchText", inclusive a URL quebrada. Estes dois testes
+   capturam a URL de verdade que `fetch` recebeu e comparam com o endpoint
+   documentado da Places API (New), caractere por caractere — não é possível
+   passar com um path parecido, só com o path certo.
+   ========================================================================== */
+
+test('URL EXATA do Text Search bate com o endpoint documentado da Places API (New)', async () => {
+  let urlCapturada = null;
+  const fetchOriginalDoTeste = global.fetch;
+  criarFetchMock({ paginas: [{ places: [placeBruto()] }] });
+  const fetchMockado = global.fetch;
+  global.fetch = async (url, opcoes) => {
+    urlCapturada = url;
+    return fetchMockado(url, opcoes);
+  };
+
+  await buscarCandidatosGooglePlaces('clínica de estética', 'Goiânia', 1);
+
+  assert.equal(urlCapturada, 'https://places.googleapis.com/v1/places:searchText');
+  global.fetch = fetchOriginalDoTeste;
+});
+
+test('URL EXATA do Place Details bate com o endpoint documentado da Places API (New)', async () => {
+  const urlsCapturadas = [];
+  criarFetchMock({
+    paginas: [{ places: [placeBruto({ id: 'ChIJ_exemplo_real', websiteUri: undefined })] }],
+    detalhes: { ChIJ_exemplo_real: placeBruto({ id: 'ChIJ_exemplo_real', websiteUri: 'https://exemplo.com.br' }) },
+  });
+  const fetchMockado = global.fetch;
+  global.fetch = async (url, opcoes) => {
+    urlsCapturadas.push(url);
+    return fetchMockado(url, opcoes);
+  };
+
+  await buscarCandidatosGooglePlaces('clínica de estética', 'Goiânia', 1);
+
+  const urlDetalhes = urlsCapturadas.find((u) => u !== URL_TEXT_SEARCH);
+  assert.equal(urlDetalhes, 'https://places.googleapis.com/v1/places/ChIJ_exemplo_real');
+});
+
+test('URL do Place Details faz o encode correto do place_id', async () => {
+  const idComCaracteresEspeciais = 'ChIJ/estranho com espaço';
+  const urlsCapturadas = [];
+  criarFetchMock({
+    paginas: [{ places: [placeBruto({ id: idComCaracteresEspeciais, websiteUri: undefined })] }],
+    detalhes: {
+      [idComCaracteresEspeciais]: placeBruto({ id: idComCaracteresEspeciais, websiteUri: 'https://exemplo.com.br' }),
+    },
+  });
+  const fetchMockado = global.fetch;
+  global.fetch = async (url, opcoes) => {
+    urlsCapturadas.push(url);
+    return fetchMockado(url, opcoes);
+  };
+
+  await buscarCandidatosGooglePlaces('clínica', 'Goiânia', 1);
+
+  const urlDetalhes = urlsCapturadas.find((u) => u !== URL_TEXT_SEARCH);
+  assert.equal(
+    urlDetalhes,
+    `https://places.googleapis.com/v1/places/${encodeURIComponent(idComCaracteresEspeciais)}`,
+  );
+  // A barra do place_id precisa estar codificada (%2F) — senão o path vira
+  // um recurso diferente do que era pra ser.
+  assert.ok(urlDetalhes.includes('%2F'));
+});
 
 /* ==========================================================================
    Text Search

@@ -115,9 +115,12 @@ interface RespostaTextSearch {
    Chamadas HTTP — timeout no mesmo padrão de modelo.ts/asaas.ts
    -------------------------------------------------------------------------- */
 
+type OperacaoGooglePlaces = 'text_search' | 'place_details';
+
 async function chamarGooglePlaces<T>(
   caminho: string,
   fieldMask: string,
+  operacao: OperacaoGooglePlaces,
   opcoes: { metodo?: 'GET' | 'POST'; corpo?: unknown } = {},
 ): Promise<T> {
   const { metodo = 'GET', corpo } = opcoes;
@@ -125,12 +128,20 @@ async function chamarGooglePlaces<T>(
   // `sem_credencial` — não pode ser engolido pelo catch genérico de rede
   // logo abaixo e reaparecer como "não foi possível alcançar o Google".
   const chave = chaveGooglePlaces();
+  const url = `${BASE}${caminho}`;
   const controlador = new AbortController();
   const timeoutId = setTimeout(() => controlador.abort(), TIMEOUT_MS);
 
+  // Log de diagnóstico — NUNCA a chave (ela só vai no header X-Goog-Api-Key,
+  // que não é logado) e NUNCA query string (esta API não usa: a chave vai
+  // em header, os parâmetros de busca vão no corpo do POST). Método, URL
+  // (sem segredo nenhum — `caminho` nunca carrega place_id sensível, é um
+  // identificador público do Google) e tipo de operação, só isso.
+  console.log('[NEXO AI] Google Places ->', operacao, metodo, url);
+
   let resposta: Response;
   try {
-    resposta = await fetch(`${BASE}${caminho}`, {
+    resposta = await fetch(url, {
       method: metodo,
       headers: {
         'Content-Type': 'application/json',
@@ -151,6 +162,8 @@ async function chamarGooglePlaces<T>(
     clearTimeout(timeoutId);
   }
 
+  console.log('[NEXO AI] Google Places <-', operacao, resposta.status);
+
   const dados = await resposta.json().catch(() => null);
 
   if (!resposta.ok) {
@@ -166,7 +179,11 @@ async function chamarGooglePlaces<T>(
 }
 
 function buscarTextoGooglePlaces(textQuery: string, pageToken: string | undefined): Promise<RespostaTextSearch> {
-  return chamarGooglePlaces<RespostaTextSearch>(':searchText', FIELD_MASK_BUSCA, {
+  // Endpoint exato da Places API (New): POST /v1/places:searchText — o
+  // recurso é "places", com o método customizado ":searchText" no final.
+  // Faltava o segmento "/places" aqui (virava ".../v1:searchText", 404
+  // real em produção — ver a investigação deste incidente).
+  return chamarGooglePlaces<RespostaTextSearch>('/places:searchText', FIELD_MASK_BUSCA, 'text_search', {
     metodo: 'POST',
     corpo: {
       textQuery,
@@ -179,7 +196,11 @@ function buscarTextoGooglePlaces(textQuery: string, pageToken: string | undefine
 }
 
 function buscarDetalhesGooglePlaces(placeId: string): Promise<PlaceBruto> {
-  return chamarGooglePlaces<PlaceBruto>(`/places/${encodeURIComponent(placeId)}`, FIELD_MASK_DETALHES);
+  // Endpoint exato: GET /v1/places/{PLACE_ID}. `placeId` aqui é sempre o
+  // valor de `place.id` (bare, ex.: "ChIJ...") — NUNCA o `place.name`
+  // (esse sim já vem como "places/{id}"); nosso FieldMask só pede `id`,
+  // então não há risco de concatenar "places/" num valor que já o tenha.
+  return chamarGooglePlaces<PlaceBruto>(`/places/${encodeURIComponent(placeId)}`, FIELD_MASK_DETALHES, 'place_details');
 }
 
 /* --------------------------------------------------------------------------
