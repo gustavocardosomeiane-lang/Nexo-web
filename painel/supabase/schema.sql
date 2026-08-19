@@ -944,3 +944,72 @@ grant select, insert, update, delete on all tables in schema public to authentic
 grant select on all tables in schema public to anon;
 alter default privileges in schema public
   grant select, insert, update, delete on tables to authenticated;
+
+-- =============================================================================
+-- 11. PROSPECÇÃO AUTOMÁTICA DA NEXO AI
+--
+-- Campos que a NEXO AI precisa para prospectar negócios locais (Google
+-- Places), analisar o site de cada um e calcular um score de oportunidade —
+-- SEM tabela nova. Um lead descoberto pela IA é um lead como outro qualquer:
+-- entra com status = 'novo' e segue o MESMO funil de 9 etapas que o Kanban,
+-- o dashboard e as campanhas já usam. "Data da descoberta" não é coluna
+-- nova: `data_entrada`, logo acima, já cumpre esse papel.
+--
+-- Cópia literal de supabase/migrations/003-prospeccao-ia.sql — não há
+-- divergência entre os dois arquivos. Aditivo e idempotente como o resto
+-- deste script: roda sobre um banco que já tenha as seções 1–10 sem apagar
+-- nada.
+-- =============================================================================
+
+alter type lead_origem add value if not exists 'prospeccao_ia';
+
+alter table public.leads add column if not exists cidade   text;
+alter table public.leads add column if not exists endereco text;
+alter table public.leads add column if not exists nicho    text;
+alter table public.leads add column if not exists site     text;
+
+alter table public.leads add column if not exists place_id text;
+
+comment on column public.leads.place_id is
+  'Identificador do negócio na fonte de busca (Google Places). Chave de dedup mais confiável: mesmo place_id = mesmo negócio, sempre. NULL para leads que não vieram de busca automática.';
+
+create unique index if not exists idx_leads_place_id_unico
+  on public.leads (place_id) where place_id is not null;
+
+alter table public.leads add column if not exists score_oportunidade smallint;
+alter table public.leads add column if not exists motivo_score       text;
+
+comment on column public.leads.score_oportunidade is
+  '0-100. Calculado por código determinístico (nunca pelo modelo) a partir da análise do site: sem site, site quebrado, sem HTTPS, sem viewport mobile etc. Ver shared/regras-prospeccao.ts.';
+comment on column public.leads.motivo_score is
+  'Fatores que compuseram o score, em texto legível — nunca só o número, para o vendedor entender a nota sem reabrir a análise técnica.';
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'leads_score_oportunidade_faixa'
+  ) then
+    alter table public.leads
+      add constraint leads_score_oportunidade_faixa
+      check (score_oportunidade is null or score_oportunidade between 0 and 100);
+  end if;
+end $$;
+
+alter table public.leads add column if not exists analise_site jsonb;
+alter table public.leads add column if not exists analisado_em timestamptz;
+
+comment on column public.leads.analise_site is
+  'Achados técnicos estruturados de analisar_site (responde? HTTPS? viewport mobile? tempo de resposta? tem CTA?). jsonb para os campos poderem evoluir sem nova migration. NULL enquanto o site não foi analisado, ou quando o lead não tem site.';
+comment on column public.leads.analisado_em is
+  'Quando analisar_site rodou pela última vez para este lead. NULL = ainda não analisado.';
+
+create index if not exists idx_leads_telefone
+  on public.leads (telefone) where telefone is not null;
+
+create index if not exists idx_leads_site
+  on public.leads (lower(site)) where site is not null;
+
+create index if not exists idx_leads_score
+  on public.leads (score_oportunidade desc) where score_oportunidade is not null;
+
+notify pgrst, 'reload schema';

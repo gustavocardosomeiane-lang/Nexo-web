@@ -12,7 +12,7 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.api.json",
     "preview": "vite preview",
-    "testar": "node --test --experimental-strip-types \"testes/*.test.js\""
+    "testar": "node --test --experimental-strip-types --import \"./testes/_registrar-loader.mjs\" \"testes/*.test.js\""
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",

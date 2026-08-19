@@ -51,7 +51,26 @@ export type LeadOrigem =
   | 'instagram'
   | 'google'
   | 'ninjabot'
-  | 'outro';
+  | 'outro'
+  /** Descoberto pela busca automática da NEXO AI (Google Places). */
+  | 'prospeccao_ia';
+
+/**
+ * Achados técnicos de `analisar_site` — sinais objetivos (responde? HTTPS?
+ * viewport mobile? tem CTA?), nunca opinião de design. jsonb no banco: os
+ * campos podem evoluir sem nova migration.
+ */
+export interface AnaliseSite {
+  tem_site: boolean;
+  acessivel: boolean;
+  status_http: number | null;
+  https: boolean;
+  viewport_mobile: boolean;
+  tempo_resposta_ms: number | null;
+  tamanho_bytes: number | null;
+  tem_cta: boolean;
+  erro: string | null;
+}
 
 export interface Lead {
   id: string;
@@ -84,6 +103,30 @@ export interface Lead {
   servico_interesse_id: string | null;
   /** Preenchido quando o lead vira cliente. Mantem a rastreabilidade do funil. */
   cliente_id: string | null;
+
+  /* ---- Prospecção automática (NEXO AI) ----
+     "Data da descoberta" não é campo à parte: para um lead trazido pela IA,
+     `data_entrada`, acima, já É a data em que ele foi encontrado. */
+
+  cidade: string | null;
+  endereco: string | null;
+  /** Nicho pesquisado (ex.: "clínica de estética"). Texto livre, vindo do comando dado à NEXO AI. */
+  nicho: string | null;
+  /** URL do site do negócio, quando existe. */
+  site: string | null;
+  /**
+   * Identificador do negócio na fonte de busca (Google Places). UNIQUE no
+   * banco quando preenchido — é a chave de dedup mais confiável.
+   */
+  place_id: string | null;
+  /** 0-100. Calculado por código determinístico, nunca pelo modelo. */
+  score_oportunidade: number | null;
+  /** Fatores que compuseram o score, em texto legível. */
+  motivo_score: string | null;
+  /** Achados técnicos de `analisar_site`. NULL até a análise rodar. */
+  analise_site: AnaliseSite | null;
+  analisado_em: string | null;
+
   criado_em: string;
   atualizado_em: string;
 }

@@ -225,6 +225,16 @@ export const FERRAMENTA_MODULO: Record<string, string> = {
   consultar_conversas: 'conversas',
   buscar_memoria: 'dashboard',
   salvar_memoria: 'dashboard',
+  /**
+   * Mesmo módulo de `consultar_leads` — mas atenção: este mapa só decide
+   * quem ENXERGA o módulo `leads` (`financeiro` enxerga, só não pode
+   * CRIAR). `buscar_leads_locais` grava lead novo, então o gate aqui é só a
+   * primeira camada; a autorização fina (só administrador/vendedor, que são
+   * quem tem `leads:criar` em `src/auth/permissions.ts`) é checada de novo
+   * dentro de `executarBuscaEImportacao` (api/_lib/nexo-ai/ferramentas.ts) —
+   * porque este mapa não tem a granularidade de "ver" vs. "criar".
+   */
+  buscar_leads_locais: 'leads',
 };
 
 /** Filtra as ferramentas que este usuário pode usar. */

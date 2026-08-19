@@ -383,6 +383,17 @@ function gerar(): Gerado {
       valor_potencial: servico.preco_promocional ?? servico.preco,
       servico_interesse_id: servico.id,
       cliente_id: clienteId,
+      // Dados de demonstração vêm de cadastro manual, não de prospecção
+      // automática — nenhum destes campos se aplica.
+      cidade: null,
+      endereco: null,
+      nicho: null,
+      site: null,
+      place_id: null,
+      score_oportunidade: null,
+      motivo_score: null,
+      analise_site: null,
+      analisado_em: null,
       criado_em: instante(entradaOffset),
       atualizado_em: ultimaInteracao,
     });

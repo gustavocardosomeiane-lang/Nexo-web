@@ -163,7 +163,9 @@ const TODAS = Object.keys(FERRAMENTA_MODULO);
 
 test('a IA herda a permissão de quem pergunta — não tem a própria', () => {
   const soLeads = ferramentasPermitidas(TODAS, (m) => m === 'leads');
-  assert.deepEqual(soLeads, ['consultar_leads']);
+  // consultar_leads (leitura) e buscar_leads_locais (Etapa 4 — a única
+  // ferramenta de escrita) são os dois mapeados para o módulo 'leads'.
+  assert.deepEqual(soLeads, ['consultar_leads', 'buscar_leads_locais']);
 });
 
 test('quem não vê financeiro não consulta vendas pela IA', () => {
@@ -181,12 +183,19 @@ test('usuário sem permissão nenhuma não recebe ferramenta nenhuma', () => {
   assert.equal(ferramentasPermitidas(TODAS, () => false).length, 0);
 });
 
-test('nenhuma ferramenta de ESCRITA ou ENVIO existe nesta fase', () => {
-  // Trava de escopo: a Fase 1 é leitura + memória. WhatsApp/disparo é Fase 2.
+test('só as ferramentas de escrita explicitamente aprovadas existem nesta fase', () => {
+  // Trava de escopo. `buscar_leads_locais` é a ÚNICA exceção aprovada
+  // (Etapa 4 — prospecção automática): busca e IMPORTA lead novo, nunca
+  // envia mensagem, nunca dispara WhatsApp, nunca modifica lead existente
+  // (ver executarBuscaEImportacao em api/_lib/nexo-ai/ferramentas.ts).
+  // Qualquer OUTRA ferramenta de escrita/envio que aparecer aqui não foi
+  // combinada com você — é bug, não recurso.
+  const ESCRITA_APROVADA = new Set(['buscar_leads_locais']);
   for (const f of TODAS) {
+    if (ESCRITA_APROVADA.has(f)) continue;
     assert.ok(
       f.startsWith('consultar_') || f === 'buscar_memoria' || f === 'salvar_memoria',
-      `ferramenta inesperada para a Fase 1: ${f}`,
+      `ferramenta inesperada para esta fase: ${f}`,
     );
     assert.ok(!/enviar|disparar|whatsapp|excluir|remover|deletar/i.test(f), f);
   }

@@ -841,6 +841,16 @@ function FormularioLead({
           responsavel_id: null,
           ultima_interacao: new Date().toISOString(),
           cliente_id: null,
+          // Cadastro manual: nenhum campo de prospecção automática se aplica.
+          cidade: null,
+          endereco: null,
+          nicho: null,
+          site: null,
+          place_id: null,
+          score_oportunidade: null,
+          motivo_score: null,
+          analise_site: null,
+          analisado_em: null,
         });
         toast.sucesso('Lead cadastrado.');
       }

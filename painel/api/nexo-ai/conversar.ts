@@ -28,6 +28,8 @@ import {
   definicoesDe,
   executarFerramenta,
   FERRAMENTAS_DADOS,
+  pareceComandoDeProspeccao,
+  extrairParametrosBusca,
 } from '../_lib/nexo-ai/ferramentas.js';
 import { montarSistema } from '../_lib/nexo-ai/persona.js';
 import {
@@ -158,12 +160,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     /* ---- Contexto + ferramentas: tudo que não depende de resultado anterior, em paralelo ---- */
     const tContexto = Date.now();
     const tFerramentas = Date.now();
+    const ctxFerramenta = { db, usuarioId, papel: usuario.papel };
     const promessaFerramentas = (
       necessarias.length > 0
         ? Promise.all(
             necessarias.map(async (nome) => ({
               nome,
-              conteudo: await executarFerramenta(nome, {}, { db, usuarioId }, permitidas),
+              conteudo: await executarFerramenta(nome, {}, ctxFerramenta, permitidas),
             })),
           )
         : Promise.resolve([])
@@ -172,13 +175,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return r;
     });
 
-    const [historico, memorias, empresa, resultadosFerramentas] = await Promise.all([
+    /* ---- Prospecção automática (Etapa 4).
+       Intenção detectada por palavra-chave, de graça. Os PARÂMETROS
+       (nicho/cidade/quantidade) exigem uma extração pelo modelo — a ÚNICA
+       coisa que ele decide aqui. Busca, análise, score, dedup e importação
+       são código determinístico (executarBuscaEImportacao, em
+       ferramentas.ts) — o resultado real entra como "DADO REAL" abaixo,
+       igual a qualquer outra ferramenta. ---- */
+    const podeProspectar = permitidas.includes('buscar_leads_locais');
+    const tentarProspeccao = podeProspectar && pareceComandoDeProspeccao(mensagem);
+    const promessaProspeccao = tentarProspeccao
+      ? extrairParametrosBusca(mensagem, modelo).then(async (parametros) => {
+          // `null` = o modelo não chamou a ferramenta (faltou nicho/cidade,
+          // ou a extração falhou). Sem "DADO REAL" pra este turno; a persona
+          // já instrui a NEXO a pedir o que falta em vez de adivinhar.
+          if (!parametros) return null;
+          const conteudo = await executarFerramenta('buscar_leads_locais', parametros, ctxFerramenta, permitidas);
+          return { nome: 'buscar_leads_locais', conteudo };
+        })
+      : Promise.resolve(null);
+
+    const [historico, memorias, empresa, resultadosFerramentas, resultadoProspeccao] = await Promise.all([
       carregarHistorico(db, conversaId),
       carregarMemorias(db, usuarioId),
       carregarContextoEmpresa(db),
       promessaFerramentas,
+      promessaProspeccao,
     ]);
     console.log('[NEXO LATENCIA] contexto', Date.now() - tContexto, 'ms');
+
+    const todosResultados = resultadoProspeccao
+      ? [...resultadosFerramentas, resultadoProspeccao]
+      : resultadosFerramentas;
 
     const sistema = montarSistema({
       usuario: { nome: usuario.nome, papel: usuario.papel, email: usuario.email },
@@ -192,8 +220,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ];
 
     let sistemaComDados = sistema;
-    if (resultadosFerramentas.length > 0) {
-      const contextoDados = resultadosFerramentas
+    if (todosResultados.length > 0) {
+      const contextoDados = todosResultados
         .map((r) => `DADO REAL — ${r.nome}: ${r.conteudo}`)
         .join('\n');
       sistemaComDados = `${sistema}\n\n---\n\n${contextoDados}\nUse somente esses dados reais para responder à pergunta. Não invente números.`;

@@ -109,4 +109,5 @@ export const ROTULO_ORIGEM: Record<string, string> = {
   google: 'Google',
   ninjabot: 'NinjaBot',
   outro: 'Outro',
+  prospeccao_ia: 'Prospecção NEXO AI',
 };

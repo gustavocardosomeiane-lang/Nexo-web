@@ -20,12 +20,23 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { FerramentaModelo } from './modelo';
+import type { FerramentaModelo, ModeloProvider, MensagemModelo, ChamadaFerramenta } from './modelo';
 import { redigirSegredos } from '../../../shared/regras-nexo-ai.js';
+import { buscarLeadsLocais, carregarRegistrosDedup, type LeadPreparado } from './prospeccao.js';
+import { ErroGooglePlaces } from './google-places.js';
 
 export interface ContextoFerramenta {
   db: SupabaseClient;
   usuarioId: string;
+  /**
+   * Papel do usuário. As ferramentas de leitura não precisam disso — a
+   * permissão delas já foi decidida antes, por módulo, em `permitidas`. Só
+   * existe aqui porque `buscar_leads_locais` (a única ferramenta que
+   * ESCREVE) precisa de uma checagem mais fina do que "enxerga o módulo
+   * leads": ver o comentário de `buscar_leads_locais` em
+   * `shared/regras-nexo-ai.ts`.
+   */
+  papel: string;
 }
 
 interface Ferramenta {
@@ -48,6 +59,186 @@ async function contarPorStatus(
     por_status[s] = (por_status[s] ?? 0) + 1;
   }
   return { total: (data ?? []).length, por_status };
+}
+
+/* --------------------------------------------------------------------------
+   Prospecção automática — buscar_leads_locais
+
+   A ÚNICA ferramenta desta fase que ESCREVE no banco. Busca, análise, score
+   e deduplicação continuam 100% em api/_lib/nexo-ai/prospeccao.ts e
+   shared/regras-prospeccao.ts (Etapas 2 e 3) — este arquivo só valida a
+   entrada, chama esse pipeline já pronto e faz o INSERT. Nenhuma lógica de
+   busca/score/dedup é duplicada aqui.
+   -------------------------------------------------------------------------- */
+
+/** Só `nome` é NOT NULL em `leads` — é o único critério real de "dado mínimo suficiente". */
+function temDadosMinimos(p: LeadPreparado): boolean {
+  return Boolean(p.nome && p.nome.trim().length > 0);
+}
+
+function paraLinhaLead(p: LeadPreparado, dataEntrada: string): Record<string, unknown> {
+  return {
+    nome: p.nome,
+    telefone: p.telefone,
+    whatsapp: p.telefone,
+    origem: p.origem,
+    status: p.status,
+    data_entrada: dataEntrada,
+    cidade: p.cidade,
+    endereco: p.endereco,
+    nicho: p.nicho,
+    site: p.site,
+    place_id: p.place_id,
+    score_oportunidade: p.score_oportunidade,
+    motivo_score: p.motivo_score,
+    analise_site: p.analise_site,
+    analisado_em: p.analisado_em,
+  };
+}
+
+interface LinhaImportada {
+  id: string;
+  place_id: string | null;
+  nome: string;
+  cidade: string | null;
+  score_oportunidade: number | null;
+}
+
+/**
+ * INSERT puro — nunca UPDATE, nunca upsert que sobrescreva um lead já
+ * existente. Tenta em lote primeiro (rápido, e seguro quando não há
+ * conflito); se o Postgres recusar por violação de unicidade de `place_id`
+ * (condição de corrida real: alguém importou o mesmo negócio entre a
+ * checagem de dedup e este insert), refaz linha a linha para salvar quem não
+ * colide — em vez de perder o lote inteiro por causa de UMA colisão rara.
+ */
+async function importarLote(
+  db: SupabaseClient,
+  linhas: Record<string, unknown>[],
+): Promise<{ inseridas: LinhaImportada[]; puladosPorConflito: number }> {
+  if (linhas.length === 0) return { inseridas: [], puladosPorConflito: 0 };
+
+  const CAMPOS_RETORNO = 'id, place_id, nome, cidade, score_oportunidade';
+
+  const { data, error } = await db.from('leads').insert(linhas).select(CAMPOS_RETORNO);
+  if (!error) return { inseridas: (data ?? []) as LinhaImportada[], puladosPorConflito: 0 };
+
+  if (error.code !== '23505') throw new Error(error.message);
+
+  const inseridas: LinhaImportada[] = [];
+  let puladosPorConflito = 0;
+  for (const linha of linhas) {
+    const { data: linhaInserida, error: erroLinha } = await db
+      .from('leads')
+      .insert(linha)
+      .select(CAMPOS_RETORNO)
+      .single();
+    if (erroLinha) {
+      if (erroLinha.code === '23505') {
+        puladosPorConflito += 1;
+        continue;
+      }
+      throw new Error(erroLinha.message);
+    }
+    inseridas.push(linhaInserida as LinhaImportada);
+  }
+  return { inseridas, puladosPorConflito };
+}
+
+/** Mensagens FIXAS — nunca ecoam o texto bruto do Google, para nenhum detalhe vazar por acidente. */
+function mensagemAmigavelGoogle(e: ErroGooglePlaces): string {
+  if (e.codigo === 'sem_credencial') {
+    return 'A busca de leads locais ainda não está configurada neste servidor.';
+  }
+  if (e.status === 429) {
+    return 'O Google Places atingiu o limite de requisições agora. Tente de novo em alguns instantes.';
+  }
+  if (e.codigo === 'timeout' || e.codigo === 'rede') {
+    return 'Não foi possível alcançar o Google Places agora. Tente de novo em instantes.';
+  }
+  return 'Não foi possível buscar negócios locais agora. Tente de novo em instantes.';
+}
+
+const QUANTIDADE_PADRAO_BUSCA = 30;
+const QUANTIDADE_MAXIMA_BUSCA = 30;
+
+/**
+ * Espelha quem tem `leads:criar` em `src/auth/permissions.ts` (administrador
+ * e vendedor). `financeiro` e `colaborador` enxergam o módulo `leads` na
+ * matriz de visibilidade do servidor (`permissao.ts`), mas não podem criar
+ * lead pela UI — e não podem aqui também.
+ */
+const PAPEIS_QUE_PODEM_IMPORTAR = new Set(['administrador', 'vendedor']);
+
+async function executarBuscaEImportacao(
+  args: Record<string, unknown>,
+  ctx: ContextoFerramenta,
+): Promise<Record<string, unknown>> {
+  if (!PAPEIS_QUE_PODEM_IMPORTAR.has(ctx.papel)) {
+    throw new Error('Importar leads automaticamente é permitido só para administradores e vendedores.');
+  }
+
+  const nicho = typeof args.nicho === 'string' ? args.nicho.trim() : '';
+  const cidade = typeof args.cidade === 'string' ? args.cidade.trim() : '';
+  if (!nicho) {
+    throw new Error('Para buscar leads, preciso saber o nicho do negócio — por exemplo, "clínica de estética".');
+  }
+  if (!cidade) {
+    throw new Error('Para buscar leads, preciso saber em qual cidade procurar.');
+  }
+
+  const quantidadeBruta = Number(args.quantidade);
+  const quantidade = Number.isFinite(quantidadeBruta)
+    ? Math.min(QUANTIDADE_MAXIMA_BUSCA, Math.max(1, Math.trunc(quantidadeBruta)))
+    : QUANTIDADE_PADRAO_BUSCA;
+
+  let preparados: LeadPreparado[];
+  try {
+    const existentes = await carregarRegistrosDedup(ctx.db);
+    preparados = await buscarLeadsLocais({ nicho, cidade, quantidade }, existentes);
+  } catch (e) {
+    if (e instanceof ErroGooglePlaces) {
+      console.error('[NEXO AI] prospecção — Google Places:', e.codigo, e.status, e.message);
+      throw new Error(mensagemAmigavelGoogle(e));
+    }
+    console.error('[NEXO AI] prospecção — falha inesperada na busca:', e instanceof Error ? e.message : e);
+    throw new Error('Não foi possível buscar negócios locais agora. Tente de novo em instantes.');
+  }
+
+  // Duplicado (calculado por shared/regras-prospeccao.ts) nunca é importado.
+  const duplicados = preparados.filter((p) => p.duplicado);
+  // "Dado mínimo suficiente" = tem nome. Não é duplicado, mas também não
+  // entra: sem nome, o INSERT falharia mesmo (constraint do banco).
+  const semDadosMinimos = preparados.filter((p) => !p.duplicado && !temDadosMinimos(p));
+  const elegiveis = preparados.filter((p) => !p.duplicado && temDadosMinimos(p));
+  // Nunca importa mais que a quantidade pedida, mesmo que a busca tenha
+  // achado mais candidatos elegíveis do que isso.
+  const aImportar = elegiveis.slice(0, quantidade);
+  const excedentes = elegiveis.length - aImportar.length;
+
+  const dataEntrada = new Date().toISOString().slice(0, 10);
+  const linhas = aImportar.map((p) => paraLinhaLead(p, dataEntrada));
+
+  let inseridas: LinhaImportada[];
+  let puladosPorConflito: number;
+  try {
+    ({ inseridas, puladosPorConflito } = await importarLote(ctx.db, linhas));
+  } catch (e) {
+    console.error('[NEXO AI] prospecção — falha ao importar no Supabase:', e instanceof Error ? e.message : e);
+    throw new Error('Encontrei os leads, mas não consegui salvá-los agora. Tente de novo em instantes.');
+  }
+
+  return {
+    solicitados: quantidade,
+    encontrados: preparados.length,
+    analisados: preparados.length,
+    // Conflito de place_id por corrida é, na prática, mais um duplicado —
+    // só descoberto um instante depois da checagem de dedup.
+    duplicados: duplicados.length + puladosPorConflito,
+    importados: inseridas.length,
+    descartados: semDadosMinimos.length + excedentes,
+    leads: inseridas.map((l) => ({ nome: l.nome, cidade: l.cidade, score_oportunidade: l.score_oportunidade })),
+  };
 }
 
 /* --------------------------------------------------------------------------
@@ -164,6 +355,31 @@ const CATALOGO: Record<string, Ferramenta> = {
       return { leads, clientes, vendas, projetos };
     },
   },
+
+  buscar_leads_locais: {
+    definicao: {
+      nome: 'buscar_leads_locais',
+      descricao:
+        'Busca negócios locais no Google Places, analisa os sites, calcula um score de oportunidade e IMPORTA os melhores como leads novos no CRM. Use quando o usuário pedir para procurar, buscar ou encontrar empresas/negócios de um nicho numa cidade — ex.: "procure 30 clínicas de estética em Goiânia". Nunca chame sem nicho e cidade.',
+      parametros: {
+        type: 'object',
+        properties: {
+          nicho: {
+            type: 'string',
+            description: 'Tipo de negócio a procurar, como o usuário descreveu — ex.: "clínica de estética".',
+          },
+          cidade: { type: 'string', description: 'Cidade onde procurar — ex.: "Goiânia".' },
+          quantidade: {
+            type: 'integer',
+            description: `Quantos leads importar, entre 1 e ${QUANTIDADE_MAXIMA_BUSCA}. Se o usuário não disser, use ${QUANTIDADE_PADRAO_BUSCA}.`,
+          },
+        },
+        required: ['nicho', 'cidade'],
+        additionalProperties: false,
+      },
+    },
+    executar: executarBuscaEImportacao,
+  },
 };
 
 /** Definições para o modelo, já filtradas por permissão. */
@@ -199,5 +415,76 @@ export async function executarFerramenta(
   }
 }
 
-/** Ferramentas de leitura de dados que existem nesta fase (sem memória). */
+/**
+ * Ferramentas que existem nesta fase (sem memória). Quase todas são leitura
+ * pura; `buscar_leads_locais` é a única exceção — grava leads novos, nunca
+ * modifica um lead existente (ver `executarBuscaEImportacao` acima).
+ */
 export const FERRAMENTAS_DADOS = Object.keys(CATALOGO);
+
+/* --------------------------------------------------------------------------
+   Extração de parâmetros por linguagem natural — SÓ para buscar_leads_locais
+
+   A ÚNICA coisa que o modelo decide nesta ferramenta: OS PARÂMETROS da busca
+   (nicho/cidade/quantidade), a partir do texto livre do usuário. Score,
+   dedup e o que é importado continuam 100% em `executarBuscaEImportacao`
+   acima — código determinístico, nunca o modelo.
+   -------------------------------------------------------------------------- */
+
+/** Detecção barata por palavra-chave, ANTES de gastar uma chamada ao modelo. */
+export function pareceComandoDeProspeccao(mensagem: string): boolean {
+  const t = mensagem
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(new RegExp('[\\u0300-\\u036f]', 'g'), '');
+
+  const verbos = ['procure', 'procurar', 'busque', 'buscar', 'encontre', 'encontrar', 'prospecte', 'prospectar'];
+  const contexto = [
+    'empresa', 'empresas', 'negocio', 'negocios', 'cliente', 'clientes',
+    'lead', 'leads', 'clinica', 'clinicas', 'loja', 'lojas', 'salao', 'saloes',
+    'academia', 'academias', 'consultorio', 'consultorios', 'restaurante', 'restaurantes',
+  ];
+
+  return verbos.some((v) => t.includes(v)) && contexto.some((c) => t.includes(c));
+}
+
+const SISTEMA_EXTRACAO_PROSPECCAO = `Você extrai os parâmetros de uma busca de leads locais a partir do pedido do usuário.
+
+Se o usuário pedir para procurar, buscar ou encontrar empresas/negócios de um tipo numa cidade, chame a ferramenta buscar_leads_locais com nicho, cidade e, se ele disser um número, quantidade.
+
+Se faltar o nicho OU a cidade no pedido, NÃO chame nenhuma ferramenta — a falta dessa informação é tratada por outra parte do sistema; você não precisa responder nada aqui.`;
+
+/** Recorte mínimo de `ModeloProvider` — só o que esta função precisa, para poder ser testada com um provedor falso. */
+export interface ProvedorExtracao {
+  conversar: ModeloProvider['conversar'];
+}
+
+/**
+ * Chama o modelo SÓ para extrair nicho/cidade/quantidade — nunca para
+ * decidir o que fazer com o resultado da busca.
+ *
+ * `null` quando o modelo não chamou a ferramenta (geralmente porque faltou
+ * nicho ou cidade no pedido) ou quando a chamada ao modelo falhou — os dois
+ * casos são tratados como "não é uma prospecção executável agora", nunca
+ * como erro fatal da conversa: quem chama simplesmente segue sem os dados
+ * de prospecção, e a resposta normal da NEXO conduz o resto.
+ */
+export async function extrairParametrosBusca(
+  mensagem: string,
+  provedor: ProvedorExtracao,
+): Promise<Record<string, unknown> | null> {
+  const mensagens: MensagemModelo[] = [{ papel: 'user', conteudo: mensagem }];
+  try {
+    const resposta = await provedor.conversar({
+      sistema: SISTEMA_EXTRACAO_PROSPECCAO,
+      mensagens,
+      ferramentas: definicoesDe(['buscar_leads_locais']),
+      maxTokensSaida: 200,
+    });
+    const chamada = resposta.chamadas.find((c: ChamadaFerramenta) => c.nome === 'buscar_leads_locais');
+    return chamada?.argumentos ?? null;
+  } catch (e) {
+    console.error('[NEXO AI] prospecção — falha ao extrair parâmetros:', e instanceof Error ? e.message : e);
+    return null;
+  }
+}
