@@ -80,14 +80,27 @@ export class ErroGooglePlaces extends Error {
 }
 
 /**
- * Diagnóstico TEMPORÁRIO da credencial — investigação do 403 "The caller
- * does not have permission". NUNCA loga a chave inteira: só existência,
- * tamanho, os 4 primeiros caracteres (prefixo público de toda chave do
- * Google Cloud, ex. "AIza" — não é segredo por si só) e uma marca fixa
- * pros 2 últimos, sem revelar o valor real deles. `VERCEL_ENV` confirma se
- * a função rodou mesmo sob o ambiente que tem a variável configurada.
+ * Diagnóstico da credencial — investigação do 403 "The caller does not have
+ * permission" já concluída (causa era do lado do Google Cloud, não desta
+ * chave). NUNCA loga a chave inteira: só existência, tamanho, os 4 primeiros
+ * caracteres (prefixo público de toda chave do Google Cloud, ex. "AIza" —
+ * não é segredo por si só) e uma marca fixa pros 2 últimos, sem revelar o
+ * valor real deles. `VERCEL_ENV` confirma se a função rodou mesmo sob o
+ * ambiente que tem a variável configurada.
+ *
+ * Throttlado por VALOR (não por instância nem por flag "já rodou uma vez"):
+ * `chaveGooglePlaces` roda em toda busca de Text Search e em todo Place
+ * Details — numa única prospecção isso é até ~20 chamadas, o que antes
+ * imprimia a mesma linha ~20 vezes por requisição, sempre com o mesmo
+ * conteúdo (a variável de ambiente não muda no meio de uma requisição). Loga
+ * de novo só se o valor bruto realmente mudar — o que só acontece entre
+ * requisições diferentes se a credencial for rotacionada.
  */
+let ultimaCredencialBrutaDiagnosticada: string | null = null;
+
 function logDiagnosticoCredencial(bruta: string, aparada: string): void {
+  if (bruta === ultimaCredencialBrutaDiagnosticada) return;
+  ultimaCredencialBrutaDiagnosticada = bruta;
   console.log(
     '[NEXO AI] Google Places diagnostico_credencial',
     'existe=' + (bruta.length > 0 ? 'sim' : 'nao'),

@@ -61,6 +61,14 @@ function chunkContent(texto) {
   return { choices: [{ index: 0, delta: { content: texto } }] };
 }
 
+function chunkReasoning(texto) {
+  return { choices: [{ index: 0, delta: { reasoning: texto } }] };
+}
+
+function chunkReasoningContent(texto) {
+  return { choices: [{ index: 0, delta: { reasoning_content: texto } }] };
+}
+
 function chunkFinal(finishReason) {
   return { choices: [{ index: 0, delta: {}, finish_reason: finishReason }] };
 }
@@ -253,6 +261,137 @@ test('finish_reason="stop" com conteúdo aparece no log de diagnóstico', async 
   const linhaDiagnostico = logs.find((l) => l.includes('Groq <-'));
   assert.match(linhaDiagnostico, /finish_reason=stop/);
   assert.match(linhaDiagnostico, /chunks_com_content=1/);
+});
+
+/* ==========================================================================
+   5b. Formato real investigado: gpt-oss separa o raciocínio da resposta
+   final num campo próprio do delta (`reasoning`/`reasoning_content`) —
+   causa raiz do incidente "chunks=47 chunks_com_content=0". A correção NÃO
+   é usar esse campo como resposta (seria expor pensamento interno do
+   modelo ao usuário): é pedir pra Groq nem mandá-lo (`include_reasoning:
+   false`, em montarCorpoGroq) e, se `content` mesmo assim ficar vazio,
+   deixar quem chama (conversar.ts) decidir — nunca este arquivo.
+   `respostaFallbackProspeccao`, testada em resposta-final-fallback.test.js,
+   é o que cobre o caso "prospecção já concluída, sem texto do Groq"; aqui
+   só se prova que ESTE módulo nunca vaza raciocínio como se fosse resposta.
+   ========================================================================== */
+
+test('delta.reasoning sozinho (sem content): NUNCA vira resposta — lança ErroModelo "sem_resposta"', async () => {
+  global.fetch = async () =>
+    respostaSSE([
+      chunkReasoning('Encontrei '),
+      chunkReasoning('20 empresas e importei 4 novos leads.'),
+      chunkFinal('stop'),
+    ]);
+
+  await assert.rejects(
+    () => consumirStream({ ...PEDIDO_BASE, etapa: 'resposta_final' }),
+    (erro) => {
+      assert.ok(erro instanceof ErroModelo);
+      assert.equal(erro.codigo, 'sem_resposta');
+      return true;
+    },
+  );
+});
+
+test('delta.reasoning_content (nome alternativo) também NUNCA vira resposta', async () => {
+  global.fetch = async () =>
+    respostaSSE([chunkReasoningContent('Busca concluída com sucesso.'), chunkFinal('stop')]);
+
+  await assert.rejects(
+    () => consumirStream({ ...PEDIDO_BASE, etapa: 'resposta_final' }),
+    (erro) => {
+      assert.ok(erro instanceof ErroModelo);
+      assert.equal(erro.codigo, 'sem_resposta');
+      return true;
+    },
+  );
+});
+
+test('raciocínio nunca é emitido via yield — nem um único chunk chega ao cliente', async () => {
+  global.fetch = async () =>
+    respostaSSE([chunkReasoning('primeira parte '), chunkReasoning('segunda parte'), chunkFinal('stop')]);
+
+  const gerador = groqStream({ ...PEDIDO_BASE, etapa: 'resposta_final' });
+  const partes = [];
+  await assert.rejects(async () => {
+    while (true) {
+      const passo = await gerador.next();
+      if (passo.done) break;
+      partes.push(passo.value);
+    }
+  });
+
+  assert.equal(partes.length, 0, 'nenhum pedaço de raciocínio deveria ter sido entregue ao cliente via SSE');
+});
+
+test('quando delta.content existe, o raciocínio junto é ignorado — nunca entra na resposta', async () => {
+  global.fetch = async () =>
+    respostaSSE([
+      chunkReasoning('pensando sobre a pergunta...'),
+      chunkContent('Resposta real e formatada.'),
+      chunkFinal('stop'),
+    ]);
+
+  const { textoAcumulado, resultado } = await consumirStream({ ...PEDIDO_BASE, etapa: 'resposta_final' });
+
+  assert.equal(textoAcumulado, 'Resposta real e formatada.');
+  assert.equal(resultado.texto, 'Resposta real e formatada.');
+});
+
+test('nem content nem reasoning presentes: mesmo comportamento (sem_resposta), sem tratamento especial', async () => {
+  global.fetch = async () =>
+    respostaSSE([{ choices: [{ index: 0, delta: { role: 'assistant' } }] }, chunkFinal('length')]);
+
+  await assert.rejects(
+    () => consumirStream({ ...PEDIDO_BASE, etapa: 'resposta_final' }),
+    (erro) => {
+      assert.ok(erro instanceof ErroModelo);
+      assert.equal(erro.codigo, 'sem_resposta');
+      return true;
+    },
+  );
+});
+
+test('diagnóstico do primeiro delta não vazio loga só as CHAVES, nunca o texto do raciocínio', async () => {
+  global.fetch = async () =>
+    respostaSSE([chunkReasoning('conteudo-sensivel-do-raciocinio-nao-pode-vazar-no-log'), chunkFinal('stop')]);
+  const logs = capturarLogs();
+
+  await assert.rejects(() => consumirStream({ ...PEDIDO_BASE, etapa: 'resposta_final' }));
+
+  const linhaDiagnosticoDelta = logs.find((l) => l.includes('diagnostico_primeiro_delta'));
+  assert.ok(linhaDiagnosticoDelta, 'esperava o log de diagnóstico do primeiro delta');
+  assert.match(linhaDiagnosticoDelta, /chaves=reasoning/);
+  assert.equal(
+    logs.some((l) => l.includes('conteudo-sensivel-do-raciocinio-nao-pode-vazar-no-log')),
+    false,
+    'o texto do raciocínio nunca deve aparecer em nenhuma linha de log',
+  );
+});
+
+test('log de saída do stream conta chunks_com_raciocinio separadamente de chunks_com_content, mesmo falhando', async () => {
+  global.fetch = async () => respostaSSE([chunkReasoning('a'), chunkReasoning('b'), chunkFinal('stop')]);
+  const logs = capturarLogs();
+
+  await assert.rejects(() => consumirStream({ ...PEDIDO_BASE, etapa: 'resposta_final' }));
+
+  const linhaDiagnostico = logs.find((l) => l.includes('Groq <-') && l.includes('etapa=resposta_final'));
+  assert.match(linhaDiagnostico, /chunks_com_content=0/);
+  assert.match(linhaDiagnostico, /chunks_com_raciocinio=2/);
+});
+
+test('include_reasoning: false é enviado no corpo da chamada final, para a Groq nem mandar o campo', async () => {
+  let corpoEnviado = null;
+  global.fetch = async (url, opcoes) => {
+    corpoEnviado = JSON.parse(opcoes.body);
+    return respostaSSE([chunkContent('ok'), chunkFinal('stop')]);
+  };
+
+  await consumirStream({ ...PEDIDO_BASE, etapa: 'resposta_final' });
+
+  assert.equal(corpoEnviado.include_reasoning, false);
+  assert.equal('reasoning_format' in corpoEnviado, false, 'reasoning_format não é suportado para gpt-oss — nunca deve ser enviado');
 });
 
 /* ==========================================================================

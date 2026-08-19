@@ -109,6 +109,57 @@ function enviarFrame(res: VercelResponse, frame: FrameStream): void {
 
 const MENSAGEM_INDISPONIVEL = 'A NEXO está temporariamente indisponível. Tente novamente em alguns instantes.';
 
+/**
+ * Resultado bruto de `buscar_leads_locais` — só os campos que o fallback
+ * precisa ler (ver `executarBuscaEImportacao` em ferramentas.ts).
+ */
+interface ResultadoProspeccaoBruto {
+  encontrados?: number;
+  importados?: number;
+  /** Presente quando a FERRAMENTA falhou (Google Places, Supabase, etc.) —
+   * nesse caso não é "sucesso sem texto", é falha de verdade, e o fallback
+   * não se aplica: cabe ao erro normal do Groq (ou ao "DADO REAL" de erro
+   * já injetado no sistema) explicar o que houve. */
+  erro?: string;
+}
+
+function palavraNoPlural(quantidade: number, singular: string, plural: string): string {
+  return quantidade === 1 ? singular : plural;
+}
+
+/**
+ * Resposta local, SEM nova chamada ao Groq e SEM reexecutar a ferramenta —
+ * lê só o JSON que `buscar_leads_locais` já produziu nesta mesma
+ * requisição. Existe para o caso em que a prospecção terminou com sucesso
+ * (negócios buscados, leads importados) mas a etapa de texto final não
+ * devolveu nada utilizável: o trabalho real já foi feito, então a resposta
+ * não pode virar "temporariamente indisponível" por causa só da última
+ * etapa, cosmética, de transformar o resultado em frase.
+ *
+ * `null` quando o conteúdo não é um JSON de sucesso reconhecível — nesses
+ * casos quem chama deve deixar o erro original seguir seu caminho normal.
+ */
+export function respostaFallbackProspeccao(conteudoJson: string): string | null {
+  let dados: ResultadoProspeccaoBruto;
+  try {
+    dados = JSON.parse(conteudoJson) as ResultadoProspeccaoBruto;
+  } catch {
+    return null;
+  }
+  if (typeof dados.erro === 'string') return null;
+
+  const { encontrados, importados } = dados;
+  if (typeof encontrados !== 'number' || typeof importados !== 'number') return null;
+
+  const empresas = palavraNoPlural(encontrados, 'empresa', 'empresas');
+  if (importados > 0) {
+    const leads = palavraNoPlural(importados, 'novo lead', 'novos leads');
+    const estavam = palavraNoPlural(importados, 'estava', 'estavam');
+    return `Busca concluída. Encontrei ${encontrados} ${empresas} e importei ${importados} ${leads} que ainda não ${estavam} cadastrado${importados === 1 ? '' : 's'}.`;
+  }
+  return `Busca concluída. Analisei ${encontrados} ${empresas}, mas nenhuma nova passou pelos critérios ou todas já estavam cadastradas.`;
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -269,20 +320,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let textoAcumulado = '';
     let resultado: RespostaModelo | undefined;
 
-    const gerador = groqStream({ sistema: sistemaComDados, mensagens, maxTokensSaida: 512, etapa: 'resposta_final' });
-    while (true) {
-      const passo = await gerador.next();
-      if (passo.done) {
-        resultado = passo.value;
-        break;
+    try {
+      const gerador = groqStream({ sistema: sistemaComDados, mensagens, maxTokensSaida: 512, etapa: 'resposta_final' });
+      while (true) {
+        const passo = await gerador.next();
+        if (passo.done) {
+          resultado = passo.value;
+          break;
+        }
+        if (tPrimeiroChunk === null) {
+          tPrimeiroChunk = Date.now();
+          console.log('[NEXO LATENCIA] primeiro_chunk_modelo', tPrimeiroChunk - tModelo, 'ms');
+          console.log('[NEXO LATENCIA] primeiro_chunk_cliente', tPrimeiroChunk - tInicio, 'ms');
+        }
+        textoAcumulado += passo.value;
+        enviarFrame(res, { tipo: 'chunk', texto: passo.value });
       }
-      if (tPrimeiroChunk === null) {
-        tPrimeiroChunk = Date.now();
-        console.log('[NEXO LATENCIA] primeiro_chunk_modelo', tPrimeiroChunk - tModelo, 'ms');
-        console.log('[NEXO LATENCIA] primeiro_chunk_cliente', tPrimeiroChunk - tInicio, 'ms');
-      }
-      textoAcumulado += passo.value;
-      enviarFrame(res, { tipo: 'chunk', texto: passo.value });
+    } catch (erroRespostaFinal) {
+      // A etapa de texto final falhou (sem conteúdo utilizável, timeout,
+      // erro do Groq — qualquer motivo). Se a prospecção já rodou com
+      // sucesso NESTA mesma requisição, o resultado real já existe e não
+      // depende do Groq: usa ele para montar uma resposta determinística,
+      // em vez de jogar fora um trabalho que já terminou. Nem a ferramenta
+      // nem o Google Places são chamados de novo aqui — `resultadoProspeccao`
+      // é só reaproveitado do que já rodou antes desta chamada ao modelo.
+      const fallback = resultadoProspeccao ? respostaFallbackProspeccao(resultadoProspeccao.conteudo) : null;
+      if (fallback === null) throw erroRespostaFinal;
+
+      console.error(
+        '[NEXO AI] resposta_final sem conteúdo utilizável do Groq — usando fallback determinístico da prospecção:',
+        erroRespostaFinal instanceof Error ? erroRespostaFinal.message : String(erroRespostaFinal),
+      );
+      textoAcumulado = fallback;
+      enviarFrame(res, { tipo: 'chunk', texto: fallback });
+      resultado = { texto: fallback, chamadas: [], tokens: { entrada: 0, saida: 0 } };
     }
     console.log('[NEXO LATENCIA] modelo_total', Date.now() - tModelo, 'ms');
 

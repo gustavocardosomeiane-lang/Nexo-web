@@ -154,6 +154,16 @@ function montarCorpoGroq(pedido: PedidoModelo, streaming = false): Record<string
      * mínimo aceito pela Groq para esta família de modelo.
      */
     reasoning_effort: 'low',
+    /*
+     * gpt-oss separa o raciocínio da resposta final num campo próprio do
+     * delta (documentação oficial da Groq) — a resposta que interessa
+     * sempre foi `content`, nunca o raciocínio. `reasoning_format` NÃO é
+     * suportado para gpt-oss (a Groq documenta `include_reasoning` como o
+     * controle certo pra esta família de modelo); pedir pra Groq nem
+     * incluir o raciocínio evita gastar parte do `max_tokens` com um
+     * conteúdo que o produto nunca exibe.
+     */
+    include_reasoning: false,
   };
 
   if (pedido.ferramentas?.length) {
@@ -364,6 +374,20 @@ export async function* groqStream(pedido: PedidoModelo): AsyncGenerator<string, 
   }
 
   let texto = '';
+  // gpt-oss é um modelo de RACIOCÍNIO: por padrão a Groq inclui os tokens de
+  // "pensamento" do modelo separados da resposta final — e, com um
+  // `max_tokens` apertado, esse raciocínio pode consumir o orçamento
+  // INTEIRO antes do modelo sequer começar a responder. Foi exatamente o
+  // que aconteceu no incidente investigado: 47 chunks, todos vazios em
+  // `delta.content`, `finish_reason` nunca chegou a aparecer como string.
+  // `include_reasoning: false` (ver montarCorpoGroq) já pede pra Groq nem
+  // mandar esse campo — mas o parser continua contando `reasoning`/
+  // `reasoning_content` só para DIAGNÓSTICO (confirmar se o parâmetro
+  // realmente suprime o campo em produção), nunca lê o valor pra virar
+  // resposta: raciocínio é conteúdo interno do modelo, não uma resposta
+  // formatada, e nunca deve chegar ao usuário. Se `delta.content` ficar
+  // vazio mesmo assim, quem decide o que fazer é conversar.ts (fallback
+  // determinístico da prospecção ou erro normal) — nunca este arquivo.
   let tokens = { entrada: 0, saida: 0 };
   // Diagnóstico da investigação do "Groq não retornou resposta": conta o
   // que realmente veio em cada chunk, em vez de só reagir ao resultado
@@ -374,8 +398,16 @@ export async function* groqStream(pedido: PedidoModelo): AsyncGenerator<string, 
   // registrado, nunca engolido em silêncio.
   let chunksTotal = 0;
   let chunksComContent = 0;
+  let chunksComRaciocinio = 0;
   let chunksComToolCalls = 0;
   let finishReason: string | null = null;
+  // TEMPORÁRIO — instrumentação da investigação do incidente. Loga só as
+  // CHAVES do primeiro delta não vazio (nunca o texto, nunca prompt/mensagem
+  // do usuário): é o que confirma, num run real, qual campo a Groq está de
+  // fato usando para gpt-oss, em vez de continuar adivinhando pelos
+  // sintomas. Remover depois que o formato estiver confirmado em produção
+  // por algumas execuções.
+  let primeiroDeltaDiagnosticado = false;
   try {
     for await (const bloco of blocosSSE(resposta.body)) {
       for (const linha of bloco.split('\n')) {
@@ -405,11 +437,29 @@ export async function* groqStream(pedido: PedidoModelo): AsyncGenerator<string, 
           finishReason = primeiraEscolha.finish_reason as string;
         }
 
+        if (!primeiroDeltaDiagnosticado && delta && Object.keys(delta).length > 0) {
+          primeiroDeltaDiagnosticado = true;
+          console.log(
+            '[NEXO AI] Groq diagnostico_primeiro_delta (temporário)',
+            'etapa=' + (pedido.etapa ?? 'desconhecida'),
+            'chaves=' + Object.keys(delta).join(','),
+          );
+        }
+
         const pedaco = typeof delta?.content === 'string' ? delta.content : '';
         if (pedaco) {
           chunksComContent += 1;
           texto += pedaco;
           yield pedaco;
+        }
+
+        // Só CONTA — nunca guarda o texto do raciocínio. É diagnóstico
+        // seguro (confirma se `include_reasoning: false` está de fato
+        // suprimindo o campo em produção); o conteúdo em si nunca deve
+        // sobreviver além deste `if`, nem em variável nem em log.
+        const temRaciocinio = typeof delta?.reasoning === 'string' || typeof delta?.reasoning_content === 'string';
+        if (temRaciocinio) {
+          chunksComRaciocinio += 1;
         }
 
         if (Array.isArray(delta?.tool_calls) && delta.tool_calls.length > 0) {
@@ -429,10 +479,17 @@ export async function* groqStream(pedido: PedidoModelo): AsyncGenerator<string, 
     'etapa=' + (pedido.etapa ?? 'desconhecida'),
     'chunks=' + chunksTotal,
     'chunks_com_content=' + chunksComContent,
+    'chunks_com_raciocinio=' + chunksComRaciocinio,
     'chunks_com_tool_calls=' + chunksComToolCalls,
     'finish_reason=' + (finishReason ?? 'ausente'),
   );
 
+  // `raciocinio` NUNCA vira resposta visível — é conteúdo de pensamento
+  // interno do modelo, não uma resposta formatada para o usuário. Se
+  // `delta.content` não veio nada, o chamador (conversar.ts) decide o que
+  // fazer: usar o fallback determinístico da prospecção quando ela já
+  // rodou com sucesso, ou seguir o tratamento normal de erro — nunca este
+  // arquivo decidindo exibir raciocínio.
   if (!texto.trim()) {
     throw new ErroModelo('O Groq não retornou uma resposta.', 500, 'sem_resposta');
   }
