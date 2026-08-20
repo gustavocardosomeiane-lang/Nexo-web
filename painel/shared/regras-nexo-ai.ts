@@ -176,9 +176,35 @@ export function pontuarMemoria(memoria: Memoria, pergunta: string, agora: number
   return sobreposicao * 0.7 + peso * 0.2 + bonusRecencia;
 }
 
-/** "Core": memória de empresa, ou relevância declarada acima do limiar — tenta entrar sempre, sem depender de sobreposição de palavras. */
+/**
+ * Chaves estruturais que são SEMPRE core, independente do número de
+ * relevância que a extração mandou. `importancia` não é `required` no
+ * schema da ferramenta `registrar_memoria` (só `acao` é) — o prompt só
+ * SUGERE "85+" para identidade, sem forçar; um modelo real pode mandar 70,
+ * 60, ou nem mandar o campo (cai no padrão 0.5). Preferência estrutural
+ * como nome/forma de tratamento não pode depender desse número ter saído
+ * "alto o bastante" — por isso a chave sozinha já garante core, comparada
+ * já normalizada (`normalizarChave`) pra "Nome Preferido"/"nome_preferido"
+ * contarem como a mesma coisa.
+ */
+const CHAVES_SEMPRE_CORE = new Set(['nome_preferido', 'forma_tratamento', 'idioma', 'preferencia_comunicacao']);
+
+/**
+ * A memória tem uma chave estrutural (nome preferido, forma de tratamento,
+ * idioma, preferência de comunicação)? Exportada porque `camadaMemorias`
+ * (api/_lib/nexo-ai/persona.ts) usa o MESMO critério pra separar
+ * "PREFERÊNCIAS OBRIGATÓRIAS" do resto — uma trava só, usada nos dois
+ * lugares, em vez de duas listas que podem divergir com o tempo.
+ */
+export function ehPreferenciaEstrutural(memoria: Pick<Memoria, 'chaves'>): boolean {
+  return (memoria.chaves ?? []).some((c) => CHAVES_SEMPRE_CORE.has(normalizarChave(c)));
+}
+
+/** "Core": memória de empresa, relevância declarada acima do limiar, ou chave estrutural — tenta entrar sempre, sem depender de sobreposição de palavras. */
 function ehMemoriaCore(memoria: Memoria): boolean {
-  return memoria.tipo === 'empresa' || (memoria.relevancia ?? 0) >= LIMIAR_MEMORIA_CORE;
+  if (memoria.tipo === 'empresa') return true;
+  if ((memoria.relevancia ?? 0) >= LIMIAR_MEMORIA_CORE) return true;
+  return ehPreferenciaEstrutural(memoria);
 }
 
 /**

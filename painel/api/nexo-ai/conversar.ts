@@ -498,12 +498,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       { papel: 'user', conteudo: mensagem },
     ];
 
+    // `todosResultados.length > 0` já é o sinal de "uma ferramenta rodou de
+    // verdade" — reaproveitado aqui como classificação leve de modo
+    // tarefa/conversa, sem nenhuma chamada extra ao modelo só pra decidir isso.
     let sistemaComDados = sistema;
     if (todosResultados.length > 0) {
       const contextoDados = todosResultados
         .map((r) => `DADO REAL — ${r.nome}: ${r.conteudo}`)
         .join('\n');
-      sistemaComDados = `${sistema}\n\n---\n\n${contextoDados}\nUse somente esses dados reais para responder à pergunta. Não invente números.`;
+      sistemaComDados = `${sistema}\n\n---\n\n${contextoDados}\nUse somente esses dados reais para responder à pergunta. Não invente números. Modo tarefa: resuma o resultado real de forma objetiva, sem bate-papo antes — só depois de resumir você pode sugerir um próximo passo, se fizer sentido.`;
     }
 
     /* ---- Uma chamada ao modelo por mensagem do usuário (mais uma, no
