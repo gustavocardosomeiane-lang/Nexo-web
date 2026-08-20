@@ -1,5 +1,6 @@
 /* Voz e escuta da NEXO AI: MediaRecorder + transcrição Groq (Whisper) para entrada, ElevenLabs TTS para saída. */
 import { getSupabase } from '@/data/supabase/client';
+import { deveTravarPorCredencial } from '../../shared/regras-nexo-ai';
 
 export interface AoFalar { aoIniciar?: () => void; aoTerminar?: () => void; aoErro?: (motivo: string) => void; aoNivel?: (nivel: number) => void; }
 export interface AoOuvir { aoParcial?: (texto: string) => void; aoProcessando?: () => void; aoFinal?: (texto: string) => void; aoErro?: (motivo: string) => void; aoFim?: () => void; }
@@ -105,6 +106,23 @@ class VozNexoAI implements ProvedorVoz {
    * do projeto inteiro, não reseta só porque o usuário mandou uma pergunta nova.
    */
   private cooldownTtsAte = 0;
+  /**
+   * true depois de um 401/403 da ElevenLabs (credencial inválida ou sem
+   * permissão) — INVESTIGAÇÃO: sem isso, cada segmento de fala de uma
+   * mesma resposta (a fila TTS enfileira um por trecho de ~80-160
+   * caracteres — ver segmentarParaFala em shared/regras-nexo-ai.ts) batia
+   * de novo em /api/nexo-ai/falar e levava o mesmo 401, gerando uma rajada
+   * de chamadas fadadas a falhar (era exatamente o sintoma em produção: 5+
+   * POSTs 401 em poucos segundos, um por bloco da resposta falada).
+   *
+   * Ao contrário de `cooldownTtsAte` (que expira sozinho — quota é
+   * transitória), este flag NÃO expira: uma credencial inválida não se
+   * corrige com o tempo, só um novo deploy do backend resolve. Por isso
+   * também não é resetado por instância/geração — persiste por toda a
+   * sessão da página (reset natural: recarregar a página cria uma
+   * VozNexoAI nova).
+   */
+  private credencialTtsInvalida = false;
   private streamAtual: MediaStream | null = null;
   private gravadorAtual: MediaRecorder | null = null;
   /** Cancela a gravação ativa sem transcrever/enviar — usado por pararEscuta(). */
@@ -136,6 +154,12 @@ class VozNexoAI implements ProvedorVoz {
   falar(texto: string, cb: AoFalar = {}): void {
     const limpo = limparParaVoz(texto);
     if (!this.podeFalar || !limpo) { cb.aoTerminar?.(); return; }
+    // Mesma trava da fila incremental (ver sintetizarFala) — credencial
+    // inválida não se corrige tentando de novo.
+    if (this.credencialTtsInvalida) {
+      cb.aoErro?.('A voz da NEXO está indisponível: credencial inválida. Avise o administrador.');
+      return;
+    }
 
     this.pararFala();
     this.falando = true;
@@ -153,7 +177,11 @@ class VozNexoAI implements ProvedorVoz {
           body: JSON.stringify({ texto: limpo }),
         });
         if (!resposta.ok) {
-          const corpo = await resposta.json().catch(() => null) as { erro?: string } | null;
+          const corpo = await resposta.json().catch(() => null) as { erro?: string; codigo?: string } | null;
+          if (deveTravarPorCredencial(resposta.status, corpo?.codigo)) {
+            this.credencialTtsInvalida = true;
+            console.log('[NEXO TTS] ElevenLabs', resposta.status, '— credencial inválida, sem novas tentativas');
+          }
           throw new Error(corpo?.erro ?? 'Não foi possível gerar a voz.');
         }
 
@@ -272,6 +300,12 @@ class VozNexoAI implements ProvedorVoz {
   }
 
   private async sintetizarFala(texto: string, geracao: number, indice: number): Promise<AudioBuffer | null> {
+    // Verificado ANTES de qualquer coisa — nem gasta um round-trip de auth
+    // (tokenSessao) se já se sabe que a credencial da voz está inválida.
+    if (this.credencialTtsInvalida) {
+      console.log('[NEXO TTS] pulando bloco', indice, '— credencial da voz já sabidamente inválida, não tenta de novo');
+      return null;
+    }
     if (Date.now() < this.cooldownTtsAte) {
       console.log('[NEXO TTS] pulando bloco', indice, '— em cooldown por mais', Math.ceil((this.cooldownTtsAte - Date.now()) / 1000), 's');
       return null;
@@ -298,7 +332,20 @@ class VozNexoAI implements ProvedorVoz {
       }
 
       if (!resposta.ok) {
-        const corpo = (await resposta.json().catch(() => null)) as { erro?: string } | null;
+        const corpo = (await resposta.json().catch(() => null)) as { erro?: string; codigo?: string } | null;
+        // 401/403 (ou o `codigo` explícito que o backend manda pra eles —
+        // ver falar.ts) NÃO são transitórios como um 429: tentar de novo
+        // bateria no mesmo erro sempre. Trava a fila inteira AQUI, para os
+        // próximos blocos desta mesma resposta (e das próximas) nem
+        // tentarem — sem isso, cada bloco vira uma chamada 401 nova.
+        if (deveTravarPorCredencial(resposta.status, corpo?.codigo)) {
+          this.credencialTtsInvalida = true;
+          console.log('[NEXO TTS] ElevenLabs', resposta.status, '— credencial inválida, parando a fila de fala (sem novas tentativas)');
+          // Descarta o que ainda não começou a sintetizar — os próximos
+          // itens de processarFilaFala vão bater no early-return acima e
+          // sair do loop rápido, sem tentar mais nenhum fetch.
+          this.filaFala = [];
+        }
         throw new Error(corpo?.erro ?? 'Não foi possível gerar a voz.');
       }
 

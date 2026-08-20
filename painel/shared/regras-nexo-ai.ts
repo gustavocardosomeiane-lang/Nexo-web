@@ -569,3 +569,36 @@ export function extrairRetryDelayMs(corpo: unknown, headerRetryAfter?: string | 
 
   return null;
 }
+
+/* ==========================================================================
+   8. CIRCUIT BREAKER DE CREDENCIAL DE TTS — investigação do 401 recorrente
+
+   INCIDENTE: a ElevenLabs recusou a chave (401) e o frontend continuou
+   tentando — não em looping de RETRY da mesma chamada, mas porque a fila de
+   fala (voz.ts) enfileira UM /api/nexo-ai/falar por SEGMENTO da resposta
+   (ver `segmentarParaFala` acima — uma resposta de 400+ caracteres já vira
+   3-5 segmentos), e cada segmento tentava a síntese de forma independente.
+   Sem um freio, os 5 segmentos de uma resposta bateram os 5 na ElevenLabs e
+   levaram 5 401 — exatamente o padrão observado em produção (várias
+   chamadas em poucos segundos).
+
+   Este predicado é o critério ÚNICO de "essa falha não é transitória, não
+   adianta tentar de novo" — usado tanto pelo backend (falar.ts, pra decidir
+   o `codigo: 'tts_credencial'` da resposta) quanto pelo frontend (voz.ts,
+   pra travar a fila inteira assim que o primeiro segmento falhar assim).
+   Compartilhado aqui porque `voz.ts` roda em `typeof window !== 'undefined'`
+   e não pode ser exercitado pelo `node --test` deste projeto — mas esta
+   função, sem DOM nenhum, pode.
+   ========================================================================== */
+
+/**
+ * 401 (credencial inválida) e 403 (sem permissão) nunca são transitórios —
+ * ao contrário de um 429 (limite de uso, que expira sozinho), tentar de
+ * novo bate no mesmo erro sempre. `codigo` cobre o caso em que o status já
+ * não é mais 401/403 na hora em que o frontend olha (ex.: um proxy
+ * intermediário reembalando a resposta), mas o backend já identificou a
+ * causa como credencial — ver `MENSAGENS_POR_STATUS`/`codigo` em falar.ts.
+ */
+export function deveTravarPorCredencial(status: number, codigo?: string | null): boolean {
+  return status === 401 || status === 403 || codigo === 'tts_credencial';
+}

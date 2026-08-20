@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { autenticar, responderNaoAutenticado } from '../_lib/auth.js';
-import { extrairRetryDelayMs, RETRY_MS_PADRAO } from '../../shared/regras-nexo-ai.js';
+import { extrairRetryDelayMs, RETRY_MS_PADRAO, deveTravarPorCredencial } from '../../shared/regras-nexo-ai.js';
 
 /**
  * NEXO AI — endpoint de voz (TTS).
@@ -36,6 +36,86 @@ const MENSAGENS_POR_STATUS: Record<number, string> = {
   422: 'Não foi possível processar este texto para voz.',
 };
 
+/**
+ * Diagnóstico da credencial — investigação do 401 recorrente da ElevenLabs.
+ * NUNCA loga prefixo, sufixo ou valor da chave (nem os 4 primeiros
+ * caracteres, ao contrário do diagnóstico do Google Places): só existência,
+ * tamanho e se houve trim. `voiceId` não é segredo (é só um identificador de
+ * recurso, não dá acesso a nada sozinho) — logar o valor dele ajuda a
+ * descartar a hipótese de a voz pertencer a uma conta/workspace diferente
+ * da chave nova, sem risco nenhum de expor credencial.
+ *
+ * Throttlado por VALOR (mesmo padrão de google-places.ts): loga de novo só
+ * se a chave ou o voice_id mudarem — não repete a cada requisição de TTS.
+ */
+let ultimaChaveTtsDiagnosticada: string | null = null;
+let ultimoVoiceIdDiagnosticado: string | null = null;
+
+export function logDiagnosticoCredencialTts(chaveBruta: string, voiceIdBruto: string): void {
+  if (chaveBruta === ultimaChaveTtsDiagnosticada && voiceIdBruto === ultimoVoiceIdDiagnosticado) return;
+  ultimaChaveTtsDiagnosticada = chaveBruta;
+  ultimoVoiceIdDiagnosticado = voiceIdBruto;
+  const chaveAparada = chaveBruta.trim();
+  const voiceIdAparado = voiceIdBruto.trim();
+  console.log(
+    '[NEXO TTS] diagnostico_credencial',
+    'chave_existe=' + (chaveBruta.length > 0 ? 'sim' : 'nao'),
+    'tamanho_da_chave=' + chaveAparada.length,
+    'houve_trim=' + (chaveBruta !== chaveAparada ? 'sim' : 'nao'),
+    'voice_id=' + (voiceIdAparado || 'ausente'),
+    'houve_trim_voice_id=' + (voiceIdBruto !== voiceIdAparado ? 'sim' : 'nao'),
+    'ambiente=' + (process.env.VERCEL_ENV ?? 'desconhecido'),
+  );
+}
+
+/**
+ * Monta URL + opções da chamada à ElevenLabs — extraído do handler só para
+ * poder ser testado sem precisar mockar autenticação: confirma que o
+ * endpoint é o de streaming (`/text-to-speech/{voice_id}/stream`), o header
+ * de auth é `xi-api-key` (nunca `Authorization`/`Bearer`) e o `model_id` vai
+ * no corpo. Nenhuma mudança de comportamento — só isolamento.
+ */
+export function montarRequisicaoElevenLabs(
+  voiceId: string,
+  key: string,
+  texto: string,
+): { url: string; opcoes: { method: 'POST'; headers: Record<string, string>; body: string } } {
+  return {
+    url: `${ELEVENLABS_BASE}/${encodeURIComponent(voiceId)}/stream?output_format=${FORMATO_AUDIO}`,
+    opcoes: {
+      method: 'POST',
+      headers: {
+        'xi-api-key': key,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        text: texto,
+        model_id: MODELO_TTS,
+        language_code: 'pt',
+      }),
+    },
+  };
+}
+
+/**
+ * Corpo de erro típico da ElevenLabs: `{ detail: { status, message } }` ou,
+ * às vezes, `{ detail: "mensagem solta" }`. Extrai com segurança, sem
+ * presumir o formato — nunca lança se vier algo inesperado.
+ */
+export function extrairDetalheElevenLabs(dados: unknown): { status: string | null; message: string | null } {
+  const raiz = (dados ?? null) as Record<string, unknown> | null;
+  const detail = raiz?.detail;
+  if (typeof detail === 'string') return { status: null, message: detail };
+  if (detail && typeof detail === 'object') {
+    const d = detail as Record<string, unknown>;
+    return {
+      status: typeof d.status === 'string' ? d.status : null,
+      message: typeof d.message === 'string' ? d.message : null,
+    };
+  }
+  return { status: null, message: null };
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
@@ -50,8 +130,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
   console.log('[NEXO LATENCIA] auth /falar', Date.now() - tInicio, 'ms');
 
-  const key = (process.env.ELEVENLABS_API_KEY ?? '').trim();
-  const voiceId = (process.env.ELEVENLABS_VOICE_ID ?? '').trim();
+  const keyBruta = process.env.ELEVENLABS_API_KEY ?? '';
+  const voiceIdBruto = process.env.ELEVENLABS_VOICE_ID ?? '';
+  logDiagnosticoCredencialTts(keyBruta, voiceIdBruto);
+  const key = keyBruta.trim();
+  const voiceId = voiceIdBruto.trim();
   if (!key || !voiceId) {
     console.error('[NEXO TTS] ElevenLabs não configurado:', !key ? 'falta ELEVENLABS_API_KEY' : 'falta ELEVENLABS_VOICE_ID');
     return res.status(503).json({ ok: false, erro: 'TTS não configurado.' });
@@ -66,24 +149,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const tTts = Date.now();
+    const { url, opcoes } = montarRequisicaoElevenLabs(voiceId, key, texto);
     let resposta: Response;
     try {
-      resposta = await fetch(
-        `${ELEVENLABS_BASE}/${encodeURIComponent(voiceId)}/stream?output_format=${FORMATO_AUDIO}`,
-        {
-          method: 'POST',
-          headers: {
-            'xi-api-key': key,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            text: texto,
-            model_id: MODELO_TTS,
-            language_code: 'pt',
-          }),
-          signal: controlador.signal,
-        },
-      );
+      resposta = await fetch(url, { ...opcoes, signal: controlador.signal });
     } catch (e) {
       const timeout = e instanceof Error && e.name === 'AbortError';
       console.error('[NEXO TTS] ElevenLabs erro:', timeout ? 'tempo limite excedido' : 'falha de rede');
@@ -94,7 +163,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (!resposta.ok) {
       const dados = await resposta.json().catch(() => null) as Record<string, unknown> | null;
-      console.error('[nexo-ai/tts] ElevenLabs', resposta.status);
+      const detalhe = extrairDetalheElevenLabs(dados);
+      // Request-id/trace-id, se a ElevenLabs mandar — nomes de header variam
+      // por provedor, então checa os candidatos mais comuns em vez de
+      // presumir um só. Nunca é segredo (é só um identificador de log).
+      const requestId =
+        resposta.headers.get('request-id') ??
+        resposta.headers.get('x-request-id') ??
+        resposta.headers.get('elevenlabs-request-id') ??
+        null;
+      console.error(
+        '[nexo-ai/tts] ElevenLabs erro_corpo',
+        'status_http=' + resposta.status,
+        'detail_status=' + (detalhe.status ?? 'ausente'),
+        'detail_message=' + (detalhe.message ?? 'ausente'),
+        'request_id=' + (requestId ?? 'ausente'),
+      );
 
       if (resposta.status === 429) {
         const retryMs = extrairRetryDelayMs(dados, resposta.headers.get('retry-after')) ?? RETRY_MS_PADRAO;
@@ -110,7 +194,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const erroPublico = MENSAGENS_POR_STATUS[resposta.status] ?? 'Não foi possível gerar a voz.';
       const status = resposta.status >= 500 ? 502 : resposta.status;
-      return res.status(status).json({ ok: false, erro: erroPublico });
+      // `tts_credencial` — sinal explícito pro frontend nunca tentar de novo
+      // automaticamente (ver deveTravarPorCredencial / voz.ts).
+      const codigo = deveTravarPorCredencial(resposta.status) ? 'tts_credencial' : undefined;
+      return res.status(status).json({ ok: false, erro: erroPublico, ...(codigo ? { codigo } : {}) });
     }
 
     const bytes = Buffer.from(await resposta.arrayBuffer());
