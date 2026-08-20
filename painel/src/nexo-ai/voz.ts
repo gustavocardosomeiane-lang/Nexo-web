@@ -180,7 +180,7 @@ class VozNexoAI implements ProvedorVoz {
           const corpo = await resposta.json().catch(() => null) as { erro?: string; codigo?: string } | null;
           if (deveTravarPorCredencial(resposta.status, corpo?.codigo)) {
             this.credencialTtsInvalida = true;
-            console.log('[NEXO TTS] ElevenLabs', resposta.status, '— credencial inválida, sem novas tentativas');
+            console.log('[NEXO TTS]', resposta.status, '— credencial inválida, sem novas tentativas');
           }
           throw new Error(corpo?.erro ?? 'Não foi possível gerar a voz.');
         }
@@ -340,7 +340,7 @@ class VozNexoAI implements ProvedorVoz {
         // tentarem — sem isso, cada bloco vira uma chamada 401 nova.
         if (deveTravarPorCredencial(resposta.status, corpo?.codigo)) {
           this.credencialTtsInvalida = true;
-          console.log('[NEXO TTS] ElevenLabs', resposta.status, '— credencial inválida, parando a fila de fala (sem novas tentativas)');
+          console.log('[NEXO TTS]', resposta.status, '— credencial inválida, parando a fila de fala (sem novas tentativas)');
           // Descarta o que ainda não começou a sintetizar — os próximos
           // itens de processarFilaFala vão bater no early-return acima e
           // sair do loop rápido, sem tentar mais nenhum fetch.
