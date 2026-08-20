@@ -24,6 +24,8 @@ import type { FerramentaModelo, ModeloProvider, MensagemModelo, ChamadaFerrament
 import { redigirSegredos } from '../../../shared/regras-nexo-ai.js';
 import { buscarLeadsLocais, carregarRegistrosDedup, type LeadPreparado } from './prospeccao.js';
 import { ErroGooglePlaces } from './google-places.js';
+import { registrarMemoria } from './memoria.js';
+import type { ExtracaoMemoriaBruta } from '../../../shared/regras-nexo-ai.js';
 
 export interface ContextoFerramenta {
   db: SupabaseClient;
@@ -37,6 +39,8 @@ export interface ContextoFerramenta {
    * `shared/regras-nexo-ai.ts`.
    */
   papel: string;
+  /** Conversa atual — só `registrar_memoria` usa, pra rastrear de onde a memória veio (`source_conversation_id`). */
+  conversaId: string;
 }
 
 interface Ferramenta {
@@ -252,6 +256,29 @@ async function executarBuscaEImportacao(
 }
 
 /* --------------------------------------------------------------------------
+   Memória de longo prazo — registrar_memoria
+
+   Igual às outras duas ferramentas que escrevem: valida e grava é sempre
+   código determinístico (normalizarExtracaoMemoria/mesmaMemoria, em
+   shared/regras-nexo-ai.ts, chamadas de dentro de registrarMemoria em
+   memoria.ts) — o modelo só PROPÕE {acao, categoria, chave, conteudo,
+   importancia}. Nenhuma chamada externa; só leitura/escrita em ai_memories
+   com o cliente do usuário (RLS).
+   -------------------------------------------------------------------------- */
+
+async function executarRegistrarMemoria(
+  args: Record<string, unknown>,
+  ctx: ContextoFerramenta,
+): Promise<Record<string, unknown>> {
+  const resultado = await registrarMemoria(
+    { db: ctx.db, usuarioId: ctx.usuarioId, conversaId: ctx.conversaId },
+    args as ExtracaoMemoriaBruta,
+  );
+  console.log('[NEXO AI] memoria etapa=ferramenta', 'status=' + resultado.status);
+  return resultado as unknown as Record<string, unknown>;
+}
+
+/* --------------------------------------------------------------------------
    Catálogo
    -------------------------------------------------------------------------- */
 
@@ -389,6 +416,43 @@ const CATALOGO: Record<string, Ferramenta> = {
       },
     },
     executar: executarBuscaEImportacao,
+  },
+
+  registrar_memoria: {
+    definicao: {
+      nome: 'registrar_memoria',
+      descricao:
+        'Registra, atualiza ou esquece um fato de memória de LONGO PRAZO sobre quem está conversando ou sobre a empresa — preferência pessoal, decisão de negócio, ou fato recorrente que vale lembrar em conversas FUTURAS. Nunca chame para saudações, agradecimentos ou perguntas/comandos operacionais.',
+      parametros: {
+        type: 'object',
+        properties: {
+          acao: {
+            type: 'string',
+            enum: ['criar', 'atualizar', 'esquecer', 'nenhuma'],
+            description: '"nenhuma" quando a mensagem não contiver nada que valha memória de longo prazo.',
+          },
+          categoria: {
+            type: 'string',
+            enum: ['empresa', 'preferencia', 'decisao', 'projeto', 'fato'],
+          },
+          chave: {
+            type: 'string',
+            description: 'Identificador curto e estável do fato, em snake_case — ex.: "nome_preferido", "foco_atual". Usado pra reconhecer a MESMA memória numa conversa futura.',
+          },
+          conteudo: {
+            type: 'string',
+            description: 'O fato em si, resumido em uma frase, na 3ª pessoa — ex.: "Prefere ser chamado de Iong".',
+          },
+          importancia: {
+            type: 'integer',
+            description: '0 a 100. Alto (85+) para identidade/forma de tratar a pessoa — deve valer em toda conversa futura. Médio (40-70) para fatos ligados a um assunto específico.',
+          },
+        },
+        required: ['acao'],
+        additionalProperties: false,
+      },
+    },
+    executar: executarRegistrarMemoria,
   },
 };
 
@@ -576,6 +640,58 @@ export async function extrairParametrosBusca(
     return chamada?.argumentos ?? null;
   } catch (e) {
     console.error('[NEXO AI] prospecção — falha ao extrair parâmetros:', e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Extração de memória de longo prazo — SÓ para registrar_memoria
+
+   Gate de custo: `podeConterMemoria` (shared/regras-nexo-ai.ts) decide, sem
+   chamar o modelo, se a mensagem tem QUALQUER potencial de virar memória —
+   quem chama (conversar.ts) só invoca `extrairMemoria` quando esse gate
+   já disse "sim". Diferente de prospecção/campanha, aqui não existe um
+   "comando explícito": a extração roda em paralelo com QUALQUER outra coisa
+   que a mensagem também esteja pedindo (buscar leads, ler dado, conversa
+   normal) — memória e o resto não competem, uma mensagem pode ser as duas
+   coisas ao mesmo tempo (ex.: "busque 5 leads e me chama de Iong daqui pra
+   frente").
+   -------------------------------------------------------------------------- */
+
+const SISTEMA_EXTRACAO_MEMORIA = `Você decide se a ÚLTIMA mensagem do usuário contém algo que vale virar memória de LONGO PRAZO sobre ele ou sobre a empresa — preferência pessoal (como quer ser chamado, estilo de resposta), decisão de negócio, fato recorrente, ou um pedido explícito para esquecer algo dito antes.
+
+Chame a ferramenta registrar_memoria SEMPRE, mesmo quando não houver nada memorável — nesse caso, use acao: "nenhuma". Só use "criar" ou "atualizar" quando a mensagem disser algo que vale lembrar em conversas FUTURAS (não só o necessário pra responder agora). Use "esquecer" quando o usuário pedir pra esquecer, apagar ou parar de lembrar de algo.
+
+NUNCA registre saudação, agradecimento, ou qualquer pergunta/comando operacional (buscar leads, consultar dado, criar campanha) — isso não é memória de longo prazo, mesmo que apareça na mesma mensagem que algo memorável (nesse caso, extraia só a parte memorável).
+
+NUNCA inclua senha, token, chave de API ou qualquer segredo no campo "conteudo".
+
+Responda exclusivamente em português do Brasil.`;
+
+/**
+ * Chama o modelo SÓ para decidir {acao, categoria, chave, conteudo,
+ * importancia} — nunca para decidir se grava de verdade (isso é sempre
+ * `registrarMemoria`, código determinístico, que valida tudo de novo antes
+ * de tocar no banco).
+ */
+export async function extrairMemoria(
+  mensagem: string,
+  historico: MensagemModelo[],
+  provedor: ProvedorExtracao,
+): Promise<Record<string, unknown> | null> {
+  const mensagens: MensagemModelo[] = [...historico, { papel: 'user', conteudo: mensagem }];
+  try {
+    const resposta = await provedor.conversar({
+      sistema: SISTEMA_EXTRACAO_MEMORIA,
+      mensagens,
+      ferramentas: definicoesDe(['registrar_memoria']),
+      maxTokensSaida: 150,
+      etapa: 'extracao',
+    });
+    const chamada = resposta.chamadas.find((c: ChamadaFerramenta) => c.nome === 'registrar_memoria');
+    return chamada?.argumentos ?? null;
+  } catch (e) {
+    console.error('[NEXO AI] memoria — falha ao extrair:', e instanceof Error ? e.message : e);
     return null;
   }
 }

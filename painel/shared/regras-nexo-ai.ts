@@ -85,13 +85,32 @@ export interface Memoria {
   tipo: TipoMemoria;
   /** Texto da memória. É o que vai para o contexto. */
   conteudo: string;
-  /** Palavras-chave para recuperação. */
+  /** Palavras-chave para recuperação. O primeiro elemento é a "chave" de dedupe/atualização. */
   chaves?: string[];
-  /** 0..1 — quanto o operador considera isso importante. */
+  /** 0..1 — quanto o operador (ou a extração) considera isso importante. */
   relevancia?: number;
   usuario_id?: string | null;
   criado_em?: string;
+  atualizado_em?: string;
+  /** Quando esta memória foi usada pela última vez numa resposta — alimenta a recência da pontuação. */
+  last_used_at?: string | null;
+  source_conversation_id?: string | null;
+  /** Soft-delete: "esquecer" desativa em vez de apagar. `carregarMemorias` só traz `ativo = true`. */
+  ativo?: boolean;
 }
+
+/**
+ * Acima disso, a memória é tratada como "core": entra tentando SEMPRE, igual
+ * às memórias `tipo: 'empresa'`, mesmo sem sobreposição de palavras com a
+ * pergunta atual. É o mecanismo por trás de "nome/apelido preferido, idioma,
+ * forma de tratamento, identidade do negócio" sempre disponíveis — sem isso,
+ * "bom dia" nunca teria sobreposição de palavras com "me chama de Iong" e a
+ * NEXO nunca chamaria o usuário pelo nome preferido numa conversa nova.
+ */
+export const LIMIAR_MEMORIA_CORE = 0.85;
+
+/** Memória usada nos últimos N dias ganha um pequeno empurrão na pontuação — "usada recentemente" importa. */
+const JANELA_RECENCIA_DIAS = 7;
 
 /** Normaliza para comparação: minúsculas, sem acento, sem pontuação. */
 export function normalizar(texto: string): string {
@@ -127,7 +146,7 @@ export function palavrasChave(texto: string): string[] {
  * ou centenas de memórias, sobreposição resolve. O dia em que não resolver,
  * troca-se só esta função — a assinatura não muda.
  */
-export function pontuarMemoria(memoria: Memoria, pergunta: string): number {
+export function pontuarMemoria(memoria: Memoria, pergunta: string, agora: number = Date.now()): number {
   const alvo = new Set(palavrasChave(pergunta));
   if (alvo.size === 0) return 0;
 
@@ -143,15 +162,32 @@ export function pontuarMemoria(memoria: Memoria, pergunta: string): number {
   const sobreposicao = comuns / alvo.size;
   const peso = typeof memoria.relevancia === 'number' ? memoria.relevancia : 0.5;
 
-  // 80% pela aderência à pergunta, 20% pela importância declarada.
-  return sobreposicao * 0.8 + peso * 0.2;
+  // Pequeno empurrão de recência — não domina a pontuação (por isso o peso
+  // baixo), só desempata a favor do que foi útil há pouco tempo.
+  let bonusRecencia = 0;
+  if (memoria.last_used_at) {
+    const diasDesdeUso = (agora - new Date(memoria.last_used_at).getTime()) / 86_400_000;
+    if (Number.isFinite(diasDesdeUso) && diasDesdeUso >= 0 && diasDesdeUso <= JANELA_RECENCIA_DIAS) {
+      bonusRecencia = 0.1 * (1 - diasDesdeUso / JANELA_RECENCIA_DIAS);
+    }
+  }
+
+  // 70% pela aderência à pergunta, 20% pela importância declarada, 10% de recência.
+  return sobreposicao * 0.7 + peso * 0.2 + bonusRecencia;
+}
+
+/** "Core": memória de empresa, ou relevância declarada acima do limiar — tenta entrar sempre, sem depender de sobreposição de palavras. */
+function ehMemoriaCore(memoria: Memoria): boolean {
+  return memoria.tipo === 'empresa' || (memoria.relevancia ?? 0) >= LIMIAR_MEMORIA_CORE;
 }
 
 /**
  * Escolhe as memórias que entram no contexto.
  *
- * Memórias do tipo `empresa` entram sempre que couberem: são o "quem somos",
- * úteis mesmo quando a pergunta não as menciona. O resto compete por
+ * Memórias "core" (tipo `empresa`, ou relevância >= `LIMIAR_MEMORIA_CORE`)
+ * entram sempre que couberem — são o "quem somos"/"como me chamar", úteis
+ * mesmo quando a pergunta não as menciona (ex.: nome preferido deve valer
+ * pra "bom dia", não só pra perguntas sobre nome). O resto compete por
  * relevância e precisa passar de um piso — sem piso, uma pergunta genérica
  * arrastaria memórias aleatórias e pagaríamos tokens por ruído.
  */
@@ -161,9 +197,9 @@ export function selecionarMemorias(
   limiteTokens: number = ORCAMENTO.memorias,
   piso = 0.15,
 ): Memoria[] {
-  const daEmpresa = memorias.filter((m) => m.tipo === 'empresa');
+  const core = memorias.filter(ehMemoriaCore);
   const demais = memorias
-    .filter((m) => m.tipo !== 'empresa')
+    .filter((m) => !ehMemoriaCore(m))
     .map((m) => ({ m, p: pontuarMemoria(m, pergunta) }))
     .filter((x) => x.p >= piso)
     .sort((a, b) => b.p - a.p)
@@ -172,7 +208,7 @@ export function selecionarMemorias(
   const escolhidas: Memoria[] = [];
   let usado = 0;
 
-  for (const m of [...daEmpresa, ...demais]) {
+  for (const m of [...core, ...demais]) {
     const custo = estimarTokens(m.conteudo);
     if (usado + custo > limiteTokens) continue;
     escolhidas.push(m);
@@ -235,6 +271,8 @@ export const FERRAMENTA_MODULO: Record<string, string> = {
    * porque este mapa não tem a granularidade de "ver" vs. "criar".
    */
   buscar_leads_locais: 'leads',
+  /** Memória pessoal não é feature de módulo — todo papel autenticado pode ter algo lembrado dele. Mesmo módulo já reservado (sem uso até agora) pra `buscar_memoria`/`salvar_memoria` logo acima. */
+  registrar_memoria: 'dashboard',
 };
 
 /** Filtra as ferramentas que este usuário pode usar. */
@@ -601,4 +639,302 @@ export function extrairRetryDelayMs(corpo: unknown, headerRetryAfter?: string | 
  */
 export function deveTravarPorCredencial(status: number, codigo?: string | null): boolean {
   return status === 401 || status === 403 || codigo === 'tts_credencial';
+}
+
+/* ==========================================================================
+   9. SANITIZAÇÃO DE TEXTO PARA TTS — emojis não são pronunciáveis
+
+   CAUSA: o Google Cloud TTS (Chirp3 HD) narra o SIGNIFICADO de um emoji
+   ("🚀" vira "foguete", "💪" vira "bíceps") em vez de ignorá-lo — comportamento
+   documentado da síntese, não um bug do provedor. A resposta VISUAL da NEXO
+   pode continuar com emoji (faz parte da UX do chat); só o texto que vai pro
+   TTS precisa ser limpo, e só nesse ponto — nunca no que é persistido em
+   `ai_messages` (ver falar.ts: `limparParaVoz` chama `sanitizarTextoParaTts`
+   por último, imediatamente antes do fetch ao Cloud TTS).
+
+   Remove, nesta ordem (ordem importa: keycap e bandeira usam caracteres que
+   também apareceriam soltos nas limpezas genéricas de seletor/ZWJ abaixo):
+     1. sequências de keycap (dígito/#/* + seletor de variação + combining
+        enclosing keycap — ex.: "1️⃣");
+     2. bandeiras (par de indicadores regionais — ex.: "🇧🇷");
+     3. sequências de emoji "normais", incluindo ZWJ (emoji composto, ex.:
+        família "👨‍👩‍👧") e modificador de tom de pele;
+     4. seletor de variação solto e ZWJ solto que sobrarem.
+
+   Cada remoção deixa uma "marca" de pausa em vez de simplesmente desaparecer:
+   sem isso, "leads 🚀 Agora" viraria "leads  Agora" (duas metades de frase
+   coladas sem pontuação, incoerente na voz). A marca vira "." só quando NÃO
+   há pontuação terminal logo ali (evita "..") e nunca sobra ponto solto no
+   início/fim do texto.
+   ========================================================================== */
+
+// Codepoints por escape explícito (\uXXXX), de propósito — são caracteres
+// invisíveis/combinantes; literal no código-fonte seria ilegível e frágil a
+// qualquer reencode do arquivo. U+FE0F = variation selector-16 (força estilo
+// emoji), U+20E3 = combining enclosing keycap, U+200D = zero-width joiner.
+const VS16 = '\u{FE0F}';
+const ZWJ = '\u{200D}';
+const KEYCAP = '\u{20E3}';
+
+const TTS_REGEX_KEYCAP = new RegExp(`[0-9#*]${VS16}?${KEYCAP}`, 'gu');
+const TTS_REGEX_BANDEIRA = /\p{Regional_Indicator}{2}/gu;
+const TTS_REGEX_EMOJI_SEQ = new RegExp(
+  `\\p{Extended_Pictographic}${VS16}?(?:\\p{Emoji_Modifier})?(?:${ZWJ}\\p{Extended_Pictographic}${VS16}?(?:\\p{Emoji_Modifier})?)*`,
+  'gu',
+);
+const TTS_REGEX_SELETOR_SOLTO = /[\u{FE00}-\u{FE0F}]/gu;
+const TTS_REGEX_ZWJ_SOLTO = new RegExp(ZWJ, 'gu');
+
+const TTS_MARCADOR = ' EMOJI ';
+const TTS_REGEX_MARCADORES_SEGUIDOS = new RegExp(`${TTS_MARCADOR}(?:\\s*${TTS_MARCADOR})+`, 'g');
+const TTS_PONTUACAO_TERMINAL = /[.!?…]$/;
+const TTS_COMECA_COM_PONTUACAO = /^[,;:.!?…]/;
+
+/**
+ * Sanitiza texto para o TTS: remove emoji/símbolos pictográficos decorativos
+ * sem tocar em acento, número, moeda, porcentagem, sigla ou nome próprio —
+ * nenhum deles usa os intervalos Unicode removidos aqui. Nunca quebra
+ * palavra (só caracteres de emoji/seletor/ZWJ são alvo). Idempotente: rodar
+ * duas vezes no mesmo texto dá o mesmo resultado.
+ */
+export function sanitizarTextoParaTts(textoOriginal: string): string {
+  let texto = String(textoOriginal ?? '');
+  if (!texto) return '';
+
+  texto = texto.replace(TTS_REGEX_KEYCAP, TTS_MARCADOR);
+  texto = texto.replace(TTS_REGEX_BANDEIRA, TTS_MARCADOR);
+  texto = texto.replace(TTS_REGEX_EMOJI_SEQ, TTS_MARCADOR);
+  texto = texto.replace(TTS_REGEX_SELETOR_SOLTO, '');
+  texto = texto.replace(TTS_REGEX_ZWJ_SOLTO, '');
+  texto = texto.replace(TTS_REGEX_MARCADORES_SEGUIDOS, TTS_MARCADOR);
+
+  if (!texto.includes(TTS_MARCADOR)) {
+    return texto.replace(/[ \t]+/g, ' ').trim();
+  }
+
+  const partes = texto.split(TTS_MARCADOR);
+  let resultado = '';
+
+  for (let i = 0; i < partes.length; i++) {
+    const parte = partes[i]!.replace(/[ \t]+/g, ' ').trim();
+    if (i === 0) {
+      resultado = parte;
+      continue;
+    }
+
+    const parteComecaComPontuacao = TTS_COMECA_COM_PONTUACAO.test(parte);
+    if (resultado && !TTS_PONTUACAO_TERMINAL.test(resultado) && !parteComecaComPontuacao) {
+      resultado += '.';
+    }
+    if (!parte) continue;
+    resultado += parteComecaComPontuacao ? parte : (resultado ? ' ' : '') + parte;
+  }
+
+  return resultado.trim();
+}
+
+/* ==========================================================================
+   10. MEMÓRIA — EXTRAÇÃO, VALIDAÇÃO E HEURÍSTICA DE CUSTO
+
+   A recuperação (seção 2 acima) já existia. O que faltava era o lado da
+   ESCRITA: decidir, por código determinístico, se o que o modelo extraiu
+   (via tool-calling, na ferramenta `registrar_memoria` — ver ferramentas.ts)
+   é seguro/coerente o bastante pra virar uma linha em `ai_memories`. A IA
+   nunca grava sozinha: ela só propõe `{acao, categoria, chave, conteudo,
+   importancia}`; `normalizarExtracaoMemoria` valida e normaliza tudo antes
+   de qualquer INSERT/UPDATE (ver api/_lib/nexo-ai/memoria.ts).
+   ========================================================================== */
+
+export type AcaoMemoria = 'criar' | 'atualizar' | 'esquecer' | 'nenhuma';
+
+/** O que a extração (Groq) devolve — não confiável ainda, por isso `unknown` nos campos livres. */
+export interface ExtracaoMemoriaBruta {
+  acao?: unknown;
+  categoria?: unknown;
+  chave?: unknown;
+  conteudo?: unknown;
+  importancia?: unknown;
+}
+
+export interface MemoriaNormalizada {
+  acao: AcaoMemoria;
+  categoria: TipoMemoria;
+  /** Identificador curto e estável (slug) — usado pra achar a MESMA memória depois. */
+  chave: string;
+  conteudo: string;
+  /** 0..1 — já convertido da escala 0-100 que a extração usa. */
+  relevancia: number;
+}
+
+const CATEGORIAS_VALIDAS = new Set<TipoMemoria>(['empresa', 'preferencia', 'decisao', 'projeto', 'fato']);
+
+/**
+ * Sinônimos de categoria que a extração pode produzir apesar da instrução —
+ * mapeia pro enum real que `ai_memories.tipo` já usa, em vez de rejeitar a
+ * memória inteira por causa de um rótulo. Nunca inventa um enum novo no
+ * banco: `identidade`/`pessoa`/`rotina`/`contexto`/`negocio` (vocabulário
+ * mais natural, que apareceria num pedido em linguagem comum) caem num dos 5
+ * valores que já existem.
+ */
+const SINONIMOS_CATEGORIA: Record<string, TipoMemoria> = {
+  identidade: 'preferencia',
+  pessoa: 'fato',
+  rotina: 'fato',
+  contexto: 'fato',
+  negocio: 'empresa',
+  negócio: 'empresa',
+};
+
+function normalizarCategoria(bruta: unknown): TipoMemoria {
+  const t = typeof bruta === 'string' ? bruta.trim().toLowerCase() : '';
+  if (CATEGORIAS_VALIDAS.has(t as TipoMemoria)) return t as TipoMemoria;
+  return SINONIMOS_CATEGORIA[t] ?? 'fato';
+}
+
+/** Slug estável: sem acento, minúsculo, espaço/pontuação vira "_", sem "_" duplicado nem nas pontas. */
+export function normalizarChave(bruta: string): string {
+  return normalizar(String(bruta ?? ''))
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+const TAMANHO_MAXIMO_CONTEUDO_MEMORIA = 500;
+
+/**
+ * Valida e normaliza a extração bruta do modelo — a ÚNICA porta de entrada
+ * pra uma memória virar linha no banco. `null` = recusa (nada é gravado):
+ * ação desconhecida, sem conteúdo, conteúdo vazio depois de aparado, acima
+ * do tamanho máximo, ou contendo algo que `redigirSegredos` reconheceria
+ * como segredo — memória parcialmente redigida ainda vazaria a FORMA do
+ * segredo, então a resposta correta é recusar inteira, não gravar censurada.
+ */
+export function normalizarExtracaoMemoria(bruto: ExtracaoMemoriaBruta): MemoriaNormalizada | null {
+  const acaoBruta = typeof bruto.acao === 'string' ? bruto.acao : 'nenhuma';
+  const acao: AcaoMemoria = (['criar', 'atualizar', 'esquecer', 'nenhuma'] as const).includes(acaoBruta as AcaoMemoria)
+    ? (acaoBruta as AcaoMemoria)
+    : 'nenhuma';
+
+  if (acao === 'nenhuma') return null;
+
+  const conteudoBruto = typeof bruto.conteudo === 'string' ? bruto.conteudo.trim() : '';
+  // "esquecer" pode vir só com a chave (ex.: "não me chame mais de Iong" ->
+  // esquecer chave=nome_preferido, sem precisar repetir o conteúdo).
+  if (acao !== 'esquecer' && !conteudoBruto) return null;
+  if (conteudoBruto.length > TAMANHO_MAXIMO_CONTEUDO_MEMORIA) return null;
+  if (conteudoBruto && redigirSegredos(conteudoBruto) !== conteudoBruto) return null;
+
+  const chaveBruta = typeof bruto.chave === 'string' ? bruto.chave : conteudoBruto.slice(0, 60);
+  const chave = normalizarChave(chaveBruta);
+  if (acao !== 'esquecer' && !chave) return null;
+
+  const categoria = normalizarCategoria(bruto.categoria);
+
+  const importanciaBruta = Number(bruto.importancia);
+  const importancia = Number.isFinite(importanciaBruta) ? Math.min(100, Math.max(0, importanciaBruta)) : 50;
+
+  return { acao, categoria, chave, conteudo: conteudoBruto, relevancia: importancia / 100 };
+}
+
+/**
+ * A nova memória é a MESMA que uma já existente (mesma coisa, dita de novo
+ * ou de outro jeito) — usado pra decidir UPDATE em vez de duplicar. Duas
+ * checagens, na ordem de confiança: chave idêntica (mesma categoria) é o
+ * sinal forte; sem isso, sobreposição forte de palavras do conteúdo (Jaccard
+ * >= 0.6) pega paráfrase da mesma ideia sem exigir a chave igual.
+ */
+export function mesmaMemoria(
+  candidata: Pick<MemoriaNormalizada, 'chave' | 'categoria' | 'conteudo'>,
+  existente: Pick<Memoria, 'tipo' | 'conteudo' | 'chaves'>,
+): boolean {
+  if (existente.tipo !== candidata.categoria) return false;
+
+  const chaveExistente = (existente.chaves ?? [])[0];
+  if (chaveExistente && normalizarChave(chaveExistente) === candidata.chave) return true;
+
+  const a = new Set(palavrasChave(candidata.conteudo));
+  const b = new Set(palavrasChave(existente.conteudo));
+  if (a.size === 0 || b.size === 0) return false;
+
+  let comuns = 0;
+  for (const p of a) if (b.has(p)) comuns++;
+  const uniao = new Set([...a, ...b]).size;
+  return uniao > 0 && comuns / uniao >= 0.6;
+}
+
+/**
+ * Heurística barata (sem chamar o modelo) pra decidir se vale a pena gastar
+ * uma chamada de EXTRAÇÃO de memória nesta mensagem — o controle de custo
+ * pedido: nem toda mensagem merece essa chamada extra. Saudação,
+ * agradecimento e comando operacional (já roteados por outra classificação —
+ * prospecção, criar campanha, consulta de dado) não passam daqui.
+ *
+ * TRADE-OFF DELIBERADO: lista de sinais, não um classificador. Recall não é
+ * 100% — uma frase memorável mas fora do vocabulário abaixo não dispara a
+ * extração. Prefere-se perder uma memória ocasional a pagar uma chamada ao
+ * modelo em toda mensagem só pra descobrir que não tinha nada pra guardar.
+ */
+const SINAIS_MEMORIA = [
+  'me chama', 'me chame', 'pode me chamar', 'me chamo', 'meu nome e',
+  'prefiro', 'prefiro que', 'gosto que', 'nao gosto que',
+  'nao quero mais', 'a partir de agora', 'de agora em diante',
+  'sempre que', 'nunca mais', 'passo a', 'passamos a',
+  'cuida de', 'cuida da', 'cuida do', 'e responsavel por', 'responsavel pelo', 'responsavel pela',
+  'decidimos', 'ficou decidido', 'vamos usar', 'deixamos de usar',
+  'nosso foco', 'nosso objetivo', 'nosso publico', 'nossa prioridade',
+  'a nexo usa', 'a nexo e', 'nossa marca', 'nossa identidade', 'nossa empresa',
+  'esquece que', 'esquecer que', 'nao lembra mais', 'apaga essa', 'apague essa',
+  'nao me chame mais', 'para de me chamar',
+].map(normalizar);
+
+const IGNORAR_MEMORIA = new Set(
+  ['oi', 'ola', 'bom dia', 'boa tarde', 'boa noite', 'obrigado', 'obrigada', 'valeu', 'tchau', 'ok', 'blz', 'beleza', 'obg'].map(
+    normalizar,
+  ),
+);
+
+/**
+ * Acha o `id` da memória ativa que um pedido de "esquecer" se refere — mais
+ * permissivo que `mesmaMemoria` de propósito: um pedido de esquecimento
+ * ("não me chame mais de Iong") pode não vir com a categoria certa, então a
+ * chave (em QUALQUER categoria) já é sinal suficiente. Sem chave batendo,
+ * cai para a mesma lógica de conteúdo de `mesmaMemoria`. `null` = nada pra
+ * esquecer — quem chama não erra, só não faz nada.
+ */
+export function encontrarMemoriaParaEsquecer(
+  candidata: Pick<MemoriaNormalizada, 'chave' | 'categoria' | 'conteudo'>,
+  existentes: Pick<Memoria, 'id' | 'tipo' | 'conteudo' | 'chaves'>[],
+): string | null {
+  if (candidata.chave) {
+    const porChave = existentes.find((m) => normalizarChave((m.chaves ?? [])[0] ?? '') === candidata.chave);
+    if (porChave) return porChave.id;
+  }
+  if (candidata.conteudo) {
+    const porConteudo = existentes.find((m) => mesmaMemoria(candidata, m));
+    if (porConteudo) return porConteudo.id;
+  }
+  return null;
+}
+
+/**
+ * Um erro de `fetch`/leitura de stream é um ABORTO INTENCIONAL (chamamos
+ * `AbortController.abort()` nós mesmos, ex.: "Nova conversa" cancelando uma
+ * resposta ainda em streaming) — nunca um erro de rede de verdade. Usada em
+ * `src/nexo-ai/cliente.ts` para não mostrar "conexão interrompida" quando a
+ * interrupção foi proposital.
+ *
+ * Não exige `instanceof DOMException` de propósito: o que a spec de Fetch
+ * garante é `name === 'AbortError'` — checar só isso funciona com o
+ * DOMException real do navegador e com qualquer mock/polyfill em teste, sem
+ * depender de uma classe global específica.
+ */
+export function ehAbortoIntencional(erro: unknown): boolean {
+  return typeof erro === 'object' && erro !== null && (erro as { name?: unknown }).name === 'AbortError';
+}
+
+export function podeConterMemoria(mensagem: string): boolean {
+  const t = normalizar(mensagem);
+  if (!t || t.length < 6) return false;
+  if (IGNORAR_MEMORIA.has(t)) return false;
+  return SINAIS_MEMORIA.some((s) => t.includes(s));
 }

@@ -37,6 +37,7 @@ import {
   FERRAMENTAS_DADOS,
   pareceComandoDeProspeccao,
   extrairParametrosBusca,
+  extrairMemoria,
 } from '../_lib/nexo-ai/ferramentas.js';
 import { montarSistema } from '../_lib/nexo-ai/persona.js';
 import {
@@ -47,10 +48,13 @@ import {
   usuarioPediuArabe,
   proximoTrechoSeguro,
   liberarRestante,
+  podeConterMemoria,
   type Memoria,
   type MensagemChat,
 } from '../../shared/regras-nexo-ai.js';
 import { podePorPapel } from '../_lib/nexo-ai/permissao.js';
+import { registrarMemoria, atualizarUsoMemorias } from '../_lib/nexo-ai/memoria.js';
+import { criarConversa } from '../_lib/nexo-ai/conversas.js';
 
 const LIMITE_MENSAGEM = 4000;
 
@@ -383,7 +387,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     /* ---- Contexto + ferramentas: tudo que não depende de resultado anterior, em paralelo ---- */
     const tContexto = Date.now();
     const tFerramentas = Date.now();
-    const ctxFerramenta = { db, usuarioId, papel: usuario.papel };
+    const ctxFerramenta = { db, usuarioId, papel: usuario.papel, conversaId };
 
     /* ---- Classificação da mensagem: prospecção (descobrir negócio NOVO,
        fora do CRM) ou leitura (consultar o que já existe no CRM).
@@ -445,23 +449,48 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return { nome: 'buscar_leads_locais', conteudo };
     });
 
-    const [historico, memorias, empresa, resultadosFerramentas, resultadoProspeccao] = await Promise.all([
-      promessaHistorico,
-      carregarMemorias(db, usuarioId),
-      carregarContextoEmpresa(db),
-      promessaFerramentas,
-      promessaProspeccao,
-    ]);
+    /* ---- Memória de longo prazo: extração + gravação.
+       NÃO compete com prospecção/campanha/leitura — roda em paralelo com
+       qualquer uma delas, porque uma mensagem pode ser as duas coisas ao
+       mesmo tempo ("busque 5 leads e me chama de Iong daqui pra frente").
+       `podeConterMemoria` é o freio de custo: só chama o modelo quando a
+       mensagem tem QUALQUER sinal de conter algo memorável — a maioria das
+       mensagens (saudação, comando, pergunta) nunca chega a essa chamada.
+       O resultado NUNCA vira "DADO REAL": é um efeito colateral (gravar no
+       banco), não informação para a resposta deste turno — a persona já
+       instrui a usar memória com naturalidade, sem "explicar de onde
+       lembrou", então a resposta não precisa saber que acabou de gravar. ---- */
+    const promessaMemoria = promessaClassificacao.then(async ({ historicoRecortado }) => {
+      if (!podeConterMemoria(mensagem)) return null;
+      const bruto = await extrairMemoria(mensagem, historicoRecortado, modelo);
+      if (!bruto) return null;
+      return registrarMemoria({ db, usuarioId, conversaId }, bruto);
+    });
+
+    const [historico, memorias, empresa, resultadosFerramentas, resultadoProspeccao, resultadoMemoria] =
+      await Promise.all([
+        promessaHistorico,
+        carregarMemorias(db, usuarioId),
+        carregarContextoEmpresa(db),
+        promessaFerramentas,
+        promessaProspeccao,
+        promessaMemoria,
+      ]);
     console.log('[NEXO LATENCIA] contexto', Date.now() - tContexto, 'ms');
+    if (resultadoMemoria) {
+      console.log('[NEXO LATENCIA] memoria', 'status=' + resultadoMemoria.status);
+    }
 
-    const todosResultados = resultadoProspeccao
-      ? [...resultadosFerramentas, resultadoProspeccao]
-      : resultadosFerramentas;
+    const todosResultados = [
+      ...resultadosFerramentas,
+      ...(resultadoProspeccao ? [resultadoProspeccao] : []),
+    ];
 
+    const memoriasSelecionadas = selecionarMemorias(memorias, mensagem);
     const sistema = montarSistema({
       usuario: { nome: usuario.nome, papel: usuario.papel, email: usuario.email },
       empresa,
-      memorias: selecionarMemorias(memorias, mensagem),
+      memorias: memoriasSelecionadas,
     });
 
     const mensagens: MensagemModelo[] = [
@@ -551,7 +580,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
        inteira), mas ANTES de fechar a resposta — a consistência do turno não
        fica pendurada num "fire and forget" que a Vercel Node não garante. ---- */
     const tPersiste = Date.now();
-    await salvarTurno(db, conversaId, mensagem, texto);
+    await Promise.all([
+      salvarTurno(db, conversaId, mensagem, texto),
+      // Melhor esforço — alimenta a recência da próxima recuperação
+      // (pontuarMemoria). Nunca lança, nunca atrasa a resposta por isso.
+      atualizarUsoMemorias(db, memoriasSelecionadas.map((m) => m.id)),
+    ]);
     console.log('[NEXO LATENCIA] persistencia', Date.now() - tPersiste, 'ms');
     console.log('[NEXO LATENCIA] total /conversar', Date.now() - tInicio, 'ms');
 
@@ -613,6 +647,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
    Acesso ao banco — sempre com o cliente do usuário (RLS)
    -------------------------------------------------------------------------- */
 
+/**
+ * `conversaId` ausente ou não encontrado (pertence a outro usuário, foi
+ * removido) sempre cai para `criarConversa` — é esse fallback que faz o
+ * botão "Nova conversa" funcionar: o frontend só precisa mandar
+ * `conversa_id: undefined`, sem nenhuma flag especial nem endpoint dedicado
+ * de "forçar nova" aqui (esse endpoint existe, mas separado — ver
+ * api/nexo-ai/conversas.ts — para criar a conversa ANTES da 1ª mensagem).
+ */
 async function garantirConversa(
   db: import('@supabase/supabase-js').SupabaseClient,
   usuarioId: string,
@@ -626,13 +668,7 @@ async function garantirConversa(
       .maybeSingle();
     if (data) return String((data as { id: string }).id);
   }
-  const { data, error } = await db
-    .from('ai_conversations')
-    .insert({ usuario_id: usuarioId, titulo: 'Nova conversa' })
-    .select('id')
-    .single();
-  if (error) throw new Error(error.message);
-  return String((data as { id: string }).id);
+  return criarConversa(db, usuarioId);
 }
 
 async function carregarHistorico(
@@ -648,14 +684,24 @@ async function carregarHistorico(
   return (data ?? []) as MensagemChat[];
 }
 
-async function carregarMemorias(
+/**
+ * Exportada só para teste — confirma que a memória é buscada por
+ * `usuarioId` sozinho, nunca por `conversaId` (não recebe esse parâmetro):
+ * trocar de conversa não muda quais memórias entram no contexto.
+ */
+export async function carregarMemorias(
   db: import('@supabase/supabase-js').SupabaseClient,
   usuarioId: string,
 ): Promise<Memoria[]> {
+  // `error` ignorado de propósito (mesmo padrão já usado aqui): se a
+  // migration 004 (last_used_at/ativo) ainda não tiver sido aplicada, a
+  // consulta falha e `data` vem `null` — cai pra lista vazia, a conversa
+  // continua normalmente sem memória, em vez de derrubar a resposta.
   const { data } = await db
     .from('ai_memories')
-    .select('id, tipo, conteudo, chaves, relevancia, usuario_id')
+    .select('id, tipo, conteudo, chaves, relevancia, usuario_id, last_used_at')
     .or(`usuario_id.eq.${usuarioId},usuario_id.is.null`)
+    .eq('ativo', true)
     .limit(200);
   return (data ?? []) as Memoria[];
 }

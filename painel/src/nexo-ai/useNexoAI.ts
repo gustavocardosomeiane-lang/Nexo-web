@@ -3,7 +3,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { podeTransitar, segmentarParaFala, finalizarSegmentacao, type EstadoNexoAI } from '../../shared/regras-nexo-ai';
-import { conversarStream } from './cliente';
+import { conversarStream, criarNovaConversa } from './cliente';
 import { criarProvedorVoz, type ProvedorVoz } from './voz';
 
 export interface MensagemUI { id: string; papel: 'user' | 'assistant'; conteudo: string; em: string; }
@@ -11,6 +11,10 @@ export interface UseNexoAI {
   estado: EstadoNexoAI; mensagens: MensagemUI[]; nivelVoz: number; vozLigada: boolean; erro: string | null;
   podeOuvir: boolean; podeFalar: boolean; parcialEscuta: string; enviar: (texto: string) => Promise<void>;
   alternarEscuta: () => void; alternarVoz: () => void; silenciar: () => void; limpar: () => void;
+  /** Cria e troca para uma conversa nova (botão "Nova conversa") — não apaga nada. */
+  novaConversa: () => Promise<void>;
+  /** Enquanto a nova conversa está sendo criada — pra desabilitar o botão e evitar duplo clique. */
+  criandoConversa: boolean;
 }
 const idLocal = () => `m_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 
@@ -21,7 +25,26 @@ export function useNexoAI(): UseNexoAI {
   const [nivelVoz, setNivelVoz] = useState(0);
   const [vozLigada, setVozLigada] = useState(true);
   const [parcialEscuta, setParcialEscuta] = useState('');
+  const [criandoConversa, setCriandoConversa] = useState(false);
   const conversaId = useRef<string | undefined>(undefined);
+  // Incrementada a cada `novaConversa()` bem-sucedida — invalida os
+  // callbacks (`aoIniciar`/`aoFim`) de um `enviar()` que ainda estivesse em
+  // andamento na conversa ANTERIOR: sem isso, uma resposta que já estava a
+  // caminho escreveria o `conversaId` antigo de volta por cima da conversa
+  // nova assim que chegasse, desfazendo a troca silenciosamente. Mesmo
+  // desenho de `geracaoFala` em voz.ts, pro mesmo problema.
+  const conversaGeracao = useRef(0);
+  // Guarda de duplo clique em REF, não em state: `criandoConversa` (state)
+  // só atualiza no próximo render, então dois cliques na mesma "tick" ainda
+  // veriam o state antigo (false) e passariam os dois pela checagem. Ref
+  // muda na hora, então o 2º clique síncrono já vê `true`.
+  const criandoConversaRef = useRef(false);
+  // Controlador da requisição de /conversar em voo — "Nova conversa" chama
+  // .abort() nele antes de trocar de conversa, pra não deixar uma resposta
+  // velha gerando (e gastando token) por baixo da conversa nova. `null`
+  // quando não há requisição em andamento (nunca aborta algo que já
+  // terminou nem deixa uma referência velha por engano).
+  const controladorAtual = useRef<AbortController | null>(null);
   const voz = useRef<ProvedorVoz | null>(null);
   const vozLigadaRef = useRef(vozLigada);
   vozLigadaRef.current = vozLigada;
@@ -75,10 +98,20 @@ export function useNexoAI(): UseNexoAI {
     let bufferFala = '';
     let recebeuChunk = false;
     let logouPrimeiroBloco = false;
+    // Capturado ANTES do fetch — se `novaConversa()` rodar enquanto esta
+    // resposta ainda está a caminho, a geração muda e os callbacks abaixo
+    // param de gravar em `conversaId.current` (ver comentário no `useRef`).
+    // Continua valendo mesmo com o cancelamento por AbortController abaixo —
+    // defesa em camada: se por algum motivo o abort não interromper a tempo
+    // (ex.: um frame que já estava no buffer de decodificação), a geração
+    // ainda impede a escrita indevida.
+    const geracaoDoEnvio = conversaGeracao.current;
+    const controlador = new AbortController();
+    controladorAtual.current = controlador;
 
     await conversarStream(limpo, conversaId.current, {
       aoIniciar: (novaConversaId) => {
-        if (novaConversaId) conversaId.current = novaConversaId;
+        if (novaConversaId && conversaGeracao.current === geracaoDoEnvio) conversaId.current = novaConversaId;
       },
       aoChunk: (delta) => {
         if (!recebeuChunk) {
@@ -105,7 +138,7 @@ export function useNexoAI(): UseNexoAI {
         }
       },
       aoFim: (info) => {
-        if (info.conversaId) conversaId.current = info.conversaId;
+        if (info.conversaId && conversaGeracao.current === geracaoDoEnvio) conversaId.current = info.conversaId;
 
         if (!acumulado.trim()) {
           // Nada foi gerado — mesmo fallback que o backend usa ao persistir.
@@ -135,7 +168,12 @@ export function useNexoAI(): UseNexoAI {
         if (vozTts) vozTts.pararFilaFala();
         setEstado('error'); setTimeout(() => setEstado((s) => (s === 'error' ? 'idle' : s)), 60);
       },
-    });
+    }, controlador.signal);
+
+    // Terminou (sucesso, erro ou aborto) — solta a referência pra
+    // `novaConversa()` nunca abortar um controlador de uma requisição que já
+    // não está mais em andamento.
+    if (controladorAtual.current === controlador) controladorAtual.current = null;
   }, [irPara]);
 
   const alternarEscuta = useCallback(() => {
@@ -169,5 +207,51 @@ export function useNexoAI(): UseNexoAI {
   const alternarVoz = useCallback(() => { setVozLigada((v) => { if (v) voz.current?.pararFala(); return !v; }); }, []);
   const silenciar = useCallback(() => { voz.current?.pararFala(); setNivelVoz(0); setEstado((s) => (s === 'speaking' ? 'idle' : s)); }, []);
   const limpar = useCallback(() => { voz.current?.pararFala(); voz.current?.pararEscuta(); conversaId.current = undefined; setMensagens([]); setErro(null); setParcialEscuta(''); setNivelVoz(0); setEstado('idle'); }, []);
-  return { estado, mensagens, nivelVoz, vozLigada, erro, parcialEscuta, podeOuvir: voz.current?.podeOuvir ?? false, podeFalar: voz.current?.podeFalar ?? false, enviar, alternarEscuta, alternarVoz, silenciar, limpar };
+
+  /**
+   * Botão "Nova conversa": cria a conversa no servidor ANTES de trocar
+   * qualquer estado local — só mexe em `conversaId`/`mensagens`/estado
+   * DEPOIS de confirmar a criação, então uma falha (rede, sessão expirada)
+   * nunca apaga a conversa atual (histórico continua intacto, o usuário só
+   * vê o erro e pode tentar de novo). Nenhuma mensagem, conversa ou memória
+   * antiga é removida — isso só cria mais uma linha em `ai_conversations`.
+   */
+  const novaConversa = useCallback(async () => {
+    if (criandoConversaRef.current) return;
+    criandoConversaRef.current = true;
+    setCriandoConversa(true);
+    setErro(null);
+    try {
+      const id = await criarNovaConversa();
+      voz.current?.pararFala();
+      voz.current?.pararEscuta();
+      // Cancela a resposta em voo (se houver) ANTES de trocar de conversa —
+      // sem isso ela continua gerando por baixo, gastando token à toa, e só
+      // a guarda de geração abaixo evitaria ela contaminar o estado novo.
+      // `ehAbortoIntencional` (shared/regras-nexo-ai.ts) garante que isto
+      // NUNCA aparece como erro pro usuário.
+      controladorAtual.current?.abort();
+      controladorAtual.current = null;
+      // Invalida os callbacks de qualquer enviar() ainda em voo na conversa
+      // anterior — defesa adicional, ver o comentário no useRef de
+      // conversaGeracao acima.
+      conversaGeracao.current += 1;
+      conversaId.current = id;
+      setMensagens([]);
+      setParcialEscuta('');
+      setNivelVoz(0);
+      setEstado('idle');
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : 'Não foi possível criar uma nova conversa. Tente de novo.');
+    } finally {
+      criandoConversaRef.current = false;
+      setCriandoConversa(false);
+    }
+  }, []);
+
+  return {
+    estado, mensagens, nivelVoz, vozLigada, erro, parcialEscuta,
+    podeOuvir: voz.current?.podeOuvir ?? false, podeFalar: voz.current?.podeFalar ?? false,
+    enviar, alternarEscuta, alternarVoz, silenciar, limpar, novaConversa, criandoConversa,
+  };
 }

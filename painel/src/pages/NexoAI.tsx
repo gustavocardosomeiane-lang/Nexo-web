@@ -35,6 +35,11 @@ export function NexoAI() {
     void ai.enviar(t);
   };
 
+  const iniciarNovaConversa = () => {
+    setTexto('');
+    void ai.novaConversa();
+  };
+
   const estadoMic: EstadoMic =
     ai.estado === 'listening'
       ? 'ouvindo'
@@ -50,6 +55,16 @@ export function NexoAI() {
     <div className="nexo-ai">
       <div className="nexo-ai-palco">
         <div className="nexo-ai-controles">
+          <button
+            type="button"
+            className="nexo-ai-btn"
+            onClick={iniciarNovaConversa}
+            disabled={ai.criandoConversa}
+            title="Nova conversa"
+            aria-label="Nova conversa"
+          >
+            <Icon nome="mais" tamanho={20} />
+          </button>
           <button
             type="button"
             className={`nexo-ai-btn ${ai.vozLigada ? 'ativo' : ''}`}

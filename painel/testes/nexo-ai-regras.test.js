@@ -184,13 +184,18 @@ test('usuário sem permissão nenhuma não recebe ferramenta nenhuma', () => {
 });
 
 test('só as ferramentas de escrita explicitamente aprovadas existem nesta fase', () => {
-  // Trava de escopo. `buscar_leads_locais` é a ÚNICA exceção aprovada
-  // (Etapa 4 — prospecção automática): busca e IMPORTA lead novo, nunca
-  // envia mensagem, nunca dispara WhatsApp, nunca modifica lead existente
-  // (ver executarBuscaEImportacao em api/_lib/nexo-ai/ferramentas.ts).
+  // Trava de escopo. Duas exceções aprovadas:
+  //   - `buscar_leads_locais` (prospecção automática): busca e IMPORTA lead
+  //     novo, nunca envia mensagem, nunca dispara WhatsApp, nunca modifica
+  //     lead existente (ver executarBuscaEImportacao em ferramentas.ts).
+  //   - `registrar_memoria` (memória de longo prazo): cria/atualiza/desativa
+  //     uma linha em ai_memories a partir de algo que o usuário disse —
+  //     nunca escreve em nenhuma outra tabela, nunca chama nada externo (ver
+  //     executarRegistrarMemoria em ferramentas.ts e registrarMemoria em
+  //     memoria.ts).
   // Qualquer OUTRA ferramenta de escrita/envio que aparecer aqui não foi
   // combinada com você — é bug, não recurso.
-  const ESCRITA_APROVADA = new Set(['buscar_leads_locais']);
+  const ESCRITA_APROVADA = new Set(['buscar_leads_locais', 'registrar_memoria']);
   for (const f of TODAS) {
     if (ESCRITA_APROVADA.has(f)) continue;
     assert.ok(

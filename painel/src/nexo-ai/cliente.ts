@@ -9,7 +9,7 @@
  */
 
 import { getSupabase } from '@/data/supabase/client';
-import type { Memoria, TipoMemoria } from '../../shared/regras-nexo-ai';
+import { ehAbortoIntencional, type Memoria, type TipoMemoria } from '../../shared/regras-nexo-ai';
 
 const API = '/api/nexo-ai';
 
@@ -60,6 +60,16 @@ async function chamar<T>(caminho: string, init?: RequestInit): Promise<T> {
   return corpo as T;
 }
 
+/**
+ * Cria uma conversa nova e vazia — usado pelo botão "Nova conversa". Não
+ * apaga nada: mensagens, conversas e memórias anteriores continuam intactas,
+ * isso só cria mais uma linha em `ai_conversations` e devolve o id dela.
+ */
+export async function criarNovaConversa(): Promise<string> {
+  const r = await chamar<{ conversa_id: string }>('/conversas', { method: 'POST' });
+  return r.conversa_id;
+}
+
 /** Envia uma mensagem e recebe a resposta inteira de uma vez (sem streaming). */
 export async function conversar(mensagem: string, conversaId?: string): Promise<RespostaConversa> {
   const r = await chamar<{ conversa_id: string; resposta: string; tokens?: RespostaConversa['tokens'] }>(
@@ -100,11 +110,19 @@ interface FrameStream {
  * Envia uma mensagem e consome a resposta em streaming. Nunca rejeita — toda
  * falha (rede, autenticação, erro do backend antes ou durante o stream)
  * chega via `cb.aoErro`, nunca como exceção.
+ *
+ * `signal` (opcional) permite cancelar de fora — "Nova conversa" usa isso
+ * pra encerrar uma resposta ainda em voo antes de trocar de conversa, sem
+ * desperdiçar tokens gerando um texto que ninguém vai ver. Um cancelamento
+ * assim NUNCA chama `cb.aoErro`: não é falha, é intencional (ver
+ * `ehAbortoIntencional`, checada nos dois pontos abaixo que podem lançar
+ * por causa do abort — o fetch em si e a leitura do stream).
  */
 export async function conversarStream(
   mensagem: string,
   conversaId: string | undefined,
   cb: CallbacksConversaStream,
+  signal?: AbortSignal,
 ): Promise<void> {
   let resposta: Response;
   try {
@@ -112,8 +130,10 @@ export async function conversarStream(
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(await autorizacao()) },
       body: JSON.stringify({ mensagem, conversa_id: conversaId }),
+      signal,
     });
-  } catch {
+  } catch (e) {
+    if (ehAbortoIntencional(e)) return;
     cb.aoErro?.('Não foi possível falar com a NEXO AI. Verifique a conexão.');
     return;
   }
@@ -172,7 +192,8 @@ export async function conversarStream(
       }
     }
     if (restante.trim()) processarBloco(restante);
-  } catch {
+  } catch (e) {
+    if (ehAbortoIntencional(e)) return;
     cb.aoErro?.('A conexão com a NEXO AI foi interrompida. Tente novamente.');
   }
 }

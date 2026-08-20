@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { autenticar, responderNaoAutenticado } from '../_lib/auth.js';
-import { extrairRetryDelayMs, RETRY_MS_PADRAO, deveTravarPorCredencial } from '../../shared/regras-nexo-ai.js';
+import { extrairRetryDelayMs, RETRY_MS_PADRAO, deveTravarPorCredencial, sanitizarTextoParaTts } from '../../shared/regras-nexo-ai.js';
 import { obterAccessTokenGoogle, logDiagnosticoConfigGoogleTts, ErroAuthGoogleTts } from '../_lib/nexo-ai/google-tts-auth.js';
 
 /**
@@ -41,13 +41,17 @@ const MODELO_TTS = 'eleven_flash_v2_5';
 const FORMATO_AUDIO = 'mp3_22050_32';
 
 function limparParaVoz(texto: string): string {
-  return texto
+  const semMarkdown = texto
     .replace(/[*_~`#]+/g, ' ')
     .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 6000);
+    .trim();
+  // Emoji por último: sanitizarTextoParaTts já normaliza espaço/pontuação
+  // sozinha, então rodar depois da limpeza de markdown evita desfazer o
+  // trabalho dela. Só afeta o texto enviado ao TTS — o que fica salvo na
+  // conversa (ai_messages) nunca passa por aqui.
+  return sanitizarTextoParaTts(semMarkdown).slice(0, 6000);
 }
 
 const MENSAGENS_POR_STATUS: Record<number, string> = {
